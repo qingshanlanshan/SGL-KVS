@@ -1,5 +1,5 @@
 # number of requests to run
-num_requests=128
+num_requests=256
 # number of tokens in each random prompts, set to 0 to use template prompts
 prompt_token_num=1024
 # maximum number of new tokens to generate
@@ -9,7 +9,7 @@ kvstore_compress=true
 
 rm -rf db
 
-# origin sglang with torch_native backend
+# origin sglang
 python test.py --num-requests $num_requests \
     --prompt-token-num $prompt_token_num \
     --max-new-tokens $max_new_tokens \
@@ -17,16 +17,6 @@ python test.py --num-requests $num_requests \
     --enable-hierarchical-cache \
     --hicache-ratio 1.5 \
     |& tee test.log
-
-python test.py --num-requests $num_requests \
-    --prompt-token-num $prompt_token_num \
-    --max-new-tokens $max_new_tokens \
-    --output-file output_kv_warmup.txt \
-    --enable-hierarchical-cache \
-    --hicache-ratio 1.5 \
-    --enable-kvstore \
-    $( [ "$kvstore_compress" = true ] && echo "--kvstore-compress" ) \
-    |& tee test_kv_warmup.log
 
 python test.py --num-requests $num_requests \
     --prompt-token-num $prompt_token_num \
@@ -48,7 +38,5 @@ echo kvstore_compress=$kvstore_compress
 echo "================== Results ==================="
 echo "SGLang"
 tail -n 1 output.txt
-echo "KVS (warmup)"
-tail -n 1 output_kv_warmup.txt
-echo "KVS (after warmup)"
+echo "KVS"
 tail -n 1 output_kv.txt

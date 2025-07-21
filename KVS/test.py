@@ -100,14 +100,42 @@ def random_prompt(tokenizer, token_num):
         ret += random.choice(cha_set)
     return ret
 
+def random_chunk(tokenizer, chunk_token_num):
+    cha_set = string.ascii_letters + string.digits
+    while True:
+        chunk = "".join(random.choices(cha_set, k=chunk_token_num))
+        if len(tokenizer(chunk).input_ids) == chunk_token_num:
+            return chunk
+        # pad more if needed
+        while len(tokenizer(chunk).input_ids) < chunk_token_num:
+            chunk += random.choice(cha_set)
+        # trim if too long
+        input_ids = tokenizer(chunk).input_ids
+        if len(input_ids) > chunk_token_num:
+            chunk = tokenizer.decode(input_ids[:chunk_token_num])
+        return chunk
+
+def build_chunk_pool(tokenizer, chunk_token_num, pool_size):
+    pool = []
+    for _ in range(pool_size):
+        chunk = random_chunk(tokenizer, chunk_token_num)
+        pool.append(chunk)
+    return pool
+
+def chunk_prompt_generator(chunk_pool, chunk_per_prompt):
+    return ''.join(random.choices(chunk_pool, k=chunk_per_prompt))
+
+
 def gen_arguments(num_requests, tokenizer, prompt_len=0, new_tokens=32, turns=1):
     multi_qas = [{"qas": []} for _ in range(num_requests)]
+    pool = build_chunk_pool(tokenizer, 128, 4)
     for i in range(num_requests):
         qas = multi_qas[i]["qas"]
         for _ in range(args.turns):
             qas.append(
                 {
-                    "prompt": random_prompt(tokenizer, prompt_len) if prompt_len > 0 else tempelate_prompt(),
+                    # "prompt": random_prompt(tokenizer, prompt_len) if prompt_len > 0 else tempelate_prompt(),
+                    "prompt": chunk_prompt_generator(pool, 8),
                     "new_tokens": new_tokens,
                 }
             )

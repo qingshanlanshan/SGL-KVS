@@ -116,6 +116,7 @@ class KVStorage:
                 pass
         end = time.perf_counter()   
         self.statistics.t_prefix_put += (end - start)
+        
 
     def _db_put_worker(self):
         while True:
@@ -155,6 +156,7 @@ class KVStorage:
             self.db.batch_put(db_keys, db_values)
             end = time.perf_counter()
             self.statistics.t_db_put += end - start
+            print(f"[KVStorage] put len {len(key) - start_put_idx}", flush = True)
 
     def compress(
         self,
@@ -256,6 +258,7 @@ class KVStorage:
             )
         end = time.perf_counter()
         self.statistics.t_prefix_get += (end - start)
+        print(f"[KVStorage] get len {matched_pre_len - min_length}", flush=True)
         return matched_pre_len, kv_future
 
     def _rocksdb_put(

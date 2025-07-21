@@ -1341,7 +1341,9 @@ class Scheduler(
             f += f"#queue-req: {len(self.waiting_queue)}, "
 
         f += f"timestamp: {datetime.datetime.now().isoformat()}"
-
+        if self.kvstore:
+            f += "\n"
+            f += self.kvstore.statistics_str()
         logger.info(f)
 
         if self.enable_metrics:

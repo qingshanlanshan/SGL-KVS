@@ -385,9 +385,6 @@ class HiRadixCache(RadixCache):
             )
             # insert into radix tree
             if disk_match_length > value.shape[0]:
-                print(f"available size: {self.token_to_kv_pool_allocator.available_size()}\n"
-                      f"evictable size: {self.evictable_size()}\n"
-                      f"protected size: {self.protected_size()}")
                 print(f"[HiRadixCache] {disk_match_length=}, {value.shape[0]=}, {len(key)=}")
                 need_size = disk_match_length - value.shape[0]
                 kv_tensor = kv_future.result()
@@ -408,16 +405,13 @@ class HiRadixCache(RadixCache):
                         f"{len(key)=}, {len(kv_indices)=},"
                         f"{child_key=}, {self.get_child_key_fn(child_key)=}"
                     )
-                    print(f"available size: {self.token_to_kv_pool_allocator.available_size()}\n"
-                        f"evictable size: {self.evictable_size()}\n"
-                        f"protected size: {self.protected_size()}")
                     new_node = TreeNode()
                     new_node.parent = last_node
                     new_node.key = child_key
                     new_node.value = None
                     new_node.host_value = kv_indices
                     last_node.children[self.get_child_key_fn(child_key)] = new_node
-                #     self.evictable_size_ += len(kv_indices)
+                    # self.evictable_size_ += len(kv_indices)
                     if self.cache_controller.write_policy != "write_back":
                         self.inc_hit_count(new_node)
                     last_node = new_node
