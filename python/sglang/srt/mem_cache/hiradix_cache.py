@@ -261,6 +261,20 @@ class HiRadixCache(RadixCache):
             if not x.evicted:
                 continue
 
+            if self.kvstore:
+                prefix: List[int] = x.key
+                temp = x
+                while temp.parent is not None:
+                    temp = temp.parent
+                    prefix = temp.key + prefix
+                kv_tensor = self.token_to_kv_pool_host.kv_buffer[
+                    :, :, x.host_value, :, :
+                ]
+                self.kvstore.put_prefix_kv(
+                    prefix,
+                    kv_tensor,
+                )
+
             num_evicted += self.cache_controller.evict_host(x.host_value)
 
             for k, v in x.parent.children.items():
@@ -377,16 +391,26 @@ class HiRadixCache(RadixCache):
 
         # fetch kv tensor from disk to host
         if self.kvstore:
+            host_hit_length = 0
+            last_host_node = last_node
+            while last_node.evicted:
+                print(last_node.host_value.device)
+                host_hit_length += len(last_node.host_value)
+                last_node = last_node.parent
+            print(f"[HiRadixCache] {host_hit_length=}")
+            tree_hit_length = host_hit_length + value.shape[0]
+            last_node = last_host_node
+
             # get kv tensor
             disk_match_length, kv_future = self.kvstore.get_prefix_kv(
                 key,
-                value.shape[0],
+                tree_hit_length,
                 len(key),
             )
             # insert into radix tree
-            if disk_match_length > value.shape[0]:
-                print(f"[HiRadixCache] {disk_match_length=}, {value.shape[0]=}, {len(key)=}")
-                need_size = disk_match_length - value.shape[0]
+            if disk_match_length > tree_hit_length:
+                print(f"[HiRadixCache] {disk_match_length=}, {tree_hit_length=}, {len(key)=}")
+                need_size = disk_match_length - tree_hit_length
                 kv_tensor = kv_future.result()
                 print(f"[HiRadixCache] {kv_tensor.shape=}, {need_size=}")
                 assert kv_tensor.shape[2] == need_size, f"kv_tensor shape {kv_tensor.shape} does not match need_size {need_size}"
@@ -399,9 +423,9 @@ class HiRadixCache(RadixCache):
                         self.token_to_kv_pool_host.kv_buffer[:, :, kv_indices[i], :, :] = (
                             kv_tensor[:, :, i, :, :].cpu()    
                         )
-                    child_key = key[value.shape[0]:disk_match_length]
+                    child_key = key[tree_hit_length:disk_match_length]
                     print(
-                        f"{disk_match_length=}, {value.shape[0]=}, "
+                        f"{disk_match_length=}, {tree_hit_length=}, "
                         f"{len(key)=}, {len(kv_indices)=},"
                         f"{child_key=}, {self.get_child_key_fn(child_key)=}"
                     )
@@ -415,7 +439,6 @@ class HiRadixCache(RadixCache):
                     if self.cache_controller.write_policy != "write_back":
                         self.inc_hit_count(new_node)
                     last_node = new_node
-                
 
         host_hit_length = 0
         last_host_node = last_node

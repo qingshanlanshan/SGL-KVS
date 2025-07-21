@@ -404,7 +404,7 @@ class Scheduler(
                 f"context_len={self.model_config.context_len}, "
                 f"available_gpu_mem={avail_mem:.2f} GB"
             )
-
+        self.kvstore = None
         # Init memory pool and cache
         self.init_memory_pool_and_cache()
 
