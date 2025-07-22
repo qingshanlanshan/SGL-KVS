@@ -125,9 +125,13 @@ class KVStorage:
             start = time.perf_counter()
 
             key_bytes = self._make_key(key)
-            exist_key_len = self._probe_max_prefix(
-                key_bytes, min_length=0, max_length=len(key)
-            )
+            if kv_tensor.shape[2] > 1:
+                exist_key_len = self._probe_max_prefix(
+                    key_bytes, min_length=0, max_length=len(key)
+                )
+            else:
+                # if the kv_tensor has only one element, force put
+                exist_key_len = 0
             if exist_key_len == len(key):
                 continue
 
@@ -156,7 +160,6 @@ class KVStorage:
             self.db.batch_put(db_keys, db_values)
             end = time.perf_counter()
             self.statistics.t_db_put += end - start
-            print(f"[KVStorage] put len {len(key) - start_put_idx}", flush = True)
 
     def compress(
         self,
@@ -233,12 +236,41 @@ class KVStorage:
         self.statistics.t_db_probe += (end - start)
         return matched_pre_len
 
+    
+    def probe_min_missing_prefix(
+        self,
+        key: List[int] | bytes,
+    ) -> int:
+        """
+        Probe the minimum missing prefix length for the given key.
+        Returns the length of the longest prefix that exists in the database.
+        """
+        start = time.perf_counter()
+        if isinstance(key, list):
+            key = self._make_key(key)
+        for L in range(1, len(key) + 1):
+            db_key = key[:L * 4]
+            exist = self.db.probe(db_key)
+            self.statistics.n_db_probes += 1
+            if not exist:
+                matched_pre_len = L - 1
+                break
+        else:
+            matched_pre_len = len(key)
+        end = time.perf_counter()
+        self.statistics.t_db_probe += (end - start)
+        return matched_pre_len
+
     def get_prefix_kv(
         self, 
         key: torch.Tensor, 
         min_length: int,
         max_length: int
     ) -> Tuple[int, Optional[Future]]:
+        assert min_length <= max_length <= len(key), \
+            f"Invalid lengths: {min_length=} {max_length=} {len(key)=}"
+        if min_length == max_length:
+            return min_length, None
         self.statistics.n_prefix_gets += 1
         start = time.perf_counter()
         matched_pre_len = self._probe_max_prefix(
@@ -258,7 +290,6 @@ class KVStorage:
             )
         end = time.perf_counter()
         self.statistics.t_prefix_get += (end - start)
-        print(f"[KVStorage] get len {matched_pre_len - min_length}", flush=True)
         return matched_pre_len, kv_future
 
     def _rocksdb_put(
