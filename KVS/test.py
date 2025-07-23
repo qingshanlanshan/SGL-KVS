@@ -131,11 +131,11 @@ def gen_arguments(num_requests, tokenizer, prompt_len=0, new_tokens=32, turns=1)
     pool = build_chunk_pool(tokenizer, 128, 4)
     for i in range(num_requests):
         qas = multi_qas[i]["qas"]
-        for _ in range(args.turns):
+        for _ in range(turns):
             qas.append(
                 {
                     # "prompt": random_prompt(tokenizer, prompt_len) if prompt_len > 0 else tempelate_prompt(),
-                    "prompt": chunk_prompt_generator(pool, 8),
+                    "prompt": chunk_prompt_generator(pool, prompt_len // 128) if prompt_len > 0 else tempelate_prompt(),
                     "new_tokens": new_tokens,
                 }
             )
