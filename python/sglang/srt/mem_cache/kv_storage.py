@@ -156,8 +156,12 @@ class KVStorage:
                     .data.tobytes()
                     for L in range(start_put_idx, len(key))
                 ]
-
-            self.db.batch_put(db_keys, db_values)
+            assert len(db_keys) == len(db_values), \
+                f"Length mismatch: {len(db_keys)=} != {len(db_values)=}"
+            assert all(db_value is not None for db_value in db_values), \
+                "All db_values must be non-None"
+            status = self.db.batch_put(db_keys, db_values)
+            assert status, "Batch put failed"
             end = time.perf_counter()
             self.statistics.t_db_put += end - start
 
@@ -220,50 +224,34 @@ class KVStorage:
         matched_pre_len = min_length
         if isinstance(key, list):
             key = self._make_key(key)
-        # binary search for the longest prefix
-        low, high = min_length, max_length
-        while low < high:
-            mid = (low + high + 1) // 2
-            db_key = key[:mid * 4]
-            exist = self.db.probe(db_key)
-            self.statistics.n_db_probes += 1
-            if exist:
-                matched_pre_len = mid
-                low = mid
-            else:
-                high = mid - 1
-        end = time.perf_counter()
-        self.statistics.t_db_probe += (end - start)
-        return matched_pre_len
-
-    
-    def probe_min_missing_prefix(
-        self,
-        key: List[int] | bytes,
-    ) -> int:
-        """
-        Probe the minimum missing prefix length for the given key.
-        Returns the length of the longest prefix that exists in the database.
-        """
-        start = time.perf_counter()
-        if isinstance(key, list):
-            key = self._make_key(key)
-        for L in range(1, len(key) + 1):
-            db_key = key[:L * 4]
-            exist = self.db.probe(db_key)
-            self.statistics.n_db_probes += 1
-            if not exist:
-                matched_pre_len = L - 1
-                break
+        if False:
+            # binary search for the longest prefix
+            low, high = min_length, max_length
+            while low < high:
+                mid = (low + high + 1) // 2
+                db_key = key[:mid * 4]
+                exist = self.db.probe(db_key)
+                self.statistics.n_db_probes += 1
+                if exist:
+                    matched_pre_len = mid
+                    low = mid
+                else:
+                    high = mid - 1
         else:
-            matched_pre_len = len(key)
+            for pre_len in range(max_length, min_length, -1):
+                db_key = key[:pre_len * 4]  # Each int32 is 4 bytes
+                exist = self.db.probe(db_key)
+                self.statistics.n_db_probes += 1
+                if exist:
+                    matched_pre_len = pre_len
+                    break
         end = time.perf_counter()
         self.statistics.t_db_probe += (end - start)
         return matched_pre_len
 
     def get_prefix_kv(
         self, 
-        key: torch.Tensor, 
+        key: list[int], 
         min_length: int,
         max_length: int
     ) -> Tuple[int, Optional[Future]]:
@@ -278,6 +266,7 @@ class KVStorage:
             min_length=min_length,
             max_length=max_length
         )
+        print(f"[KVStorage::get_prefix_kv] Matched prefix length: {matched_pre_len} for {len(key)=}[{min_length}:{max_length}]")
         kv_future: Optional[Future] = None
         if matched_pre_len > min_length:
             matched_key = key[:matched_pre_len]
@@ -316,6 +305,13 @@ class KVStorage:
         matched_key: List[int],
         min_length: int,
     ) -> torch.Tensor:
+        matched_prefix_length = self._probe_max_prefix(
+            matched_key,
+            min_length=min_length,
+            max_length=len(matched_key)
+        )
+        assert matched_prefix_length == len(matched_key), \
+            f"Matched prefix length {matched_prefix_length} does not match key length {len(matched_key)}"
         self.statistics.n_executor_gets += 1
         start = time.perf_counter()
         dtype = self.dtype if self.dtype in [torch.float16, torch.float32, torch.float64] else torch.float32
@@ -368,10 +364,10 @@ if __name__ == "__main__":
         layer_num=layer_num,
         executor_worker_num=4,
         db_path="~/test_db",
-        compress=True
+        compress=False
     )
 
-    key = list(range(128))
+    key = list(range(4096))
     kv_tensor = torch.arange(
         2 * layer_num * len(key) * head_num * head_dim,
         dtype=torch.float16,
@@ -387,7 +383,7 @@ if __name__ == "__main__":
     fetched_kv_tensor = kvs.wait_for_kv(kv_future)
 
     assert matched_pre_len == len(key), "Matched prefix length does not match the original key length"
-    assert torch.allclose(fetched_kv_tensor.cpu(), kv_tensor.cpu(), rtol=1e-1), "Fetched kv_tensor does not match the original kv_tensor"
+    assert torch.equal(fetched_kv_tensor.cpu(), kv_tensor.cpu()), "Fetched kv_tensor does not match the original kv_tensor"
 
     matched_pre_len, kv_future = kvs.get_prefix_kv(
         key[:3], 
@@ -396,7 +392,7 @@ if __name__ == "__main__":
     )
     fetched_kv_tensor = kvs.wait_for_kv(kv_future)
     assert matched_pre_len == 3, "Matched prefix length should be 3 for key [1, 2, 3]"
-    assert torch.allclose(fetched_kv_tensor.cpu(), kv_tensor.cpu()[:, :, :3, :, :], rtol=1e-1), "Fetched kv_tensor does not match the original kv_tensor for prefix [1, 2, 3]"
+    assert torch.equal(fetched_kv_tensor.cpu(), kv_tensor.cpu()[:, :, :3, :, :]), "Fetched kv_tensor does not match the original kv_tensor for prefix [1, 2, 3]"
 
     print("=" * 40)
     print("KVStorage test passed successfully!")
