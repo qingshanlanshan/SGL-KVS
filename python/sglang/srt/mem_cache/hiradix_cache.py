@@ -201,26 +201,57 @@ class HiRadixCache(RadixCache):
         )
         
         # put to db for each missing prefix
-        cur_node = node
-        while cur_node != self.root_node:
-            if len(prefix) <= max_prefix_length:
-                break
-            if cur_node.evicted:
-                kv_tensor = self.token_to_kv_pool_host.kv_buffer[
-                    :, :, cur_node.host_value, :, :
-                ]
-            else:
-                kv_tensor = self.token_to_kv_pool_allocator.get_cpu_copy(
-                    cur_node.value
+        if False:
+            cur_node = node
+            db_key = prefix
+            db_value = []
+            while cur_node != self.root_node:
+                if len(prefix) <= max_prefix_length:
+                    break
+                if cur_node.evicted:
+                    kv_tensor = self.token_to_kv_pool_host.kv_buffer[
+                        :, :, cur_node.host_value, :, :
+                    ]
+                else:
+                    kv_tensor = self.token_to_kv_pool_allocator.get_cpu_copy(
+                        cur_node.value
+                    )
+                    kv_tensor = self._merge_kv_cache_cpu(kv_tensor)
+                # self.kvstore.put_prefix_kv(
+                #     prefix,
+                #     kv_tensor,
+                # )
+                assert kv_tensor.device == torch.device("cpu"), \
+                    f"KV tensor must be on CPU, got {kv_tensor.device}"
+                db_value.insert(0, kv_tensor)
+                prefix = prefix[: -len(cur_node.key)]
+                cur_node = cur_node.parent
+            if len(db_value) > 0:
+                self.kvstore.put_prefix_kv(
+                    db_key,
+                    torch.cat(db_value, dim=2) if len(db_value) > 1 else db_value[0],
                 )
-                kv_tensor = self._merge_kv_cache_cpu(kv_tensor)
-            self.kvstore.put_prefix_kv(
-                prefix,
-                kv_tensor,
-            )
-            prefix = prefix[: -len(cur_node.key)]
-            cur_node = cur_node.parent
-        
+        else:
+            node_list = []
+            cur_node = node
+            while cur_node != self.root_node and len(prefix) > max_prefix_length:
+                node_list.insert(0, (prefix, cur_node))
+                prefix = prefix[: -len(cur_node.key)]
+                cur_node = cur_node.parent
+            for prefix, node in node_list:
+                if node.evicted:
+                    kv_tensor = self.token_to_kv_pool_host.kv_buffer[
+                        :, :, node.host_value, :, :
+                    ]
+                else:
+                    kv_tensor = self.token_to_kv_pool_allocator.get_cpu_copy(
+                        node.value
+                    )
+                    kv_tensor = self._merge_kv_cache_cpu(kv_tensor)
+                assert kv_tensor.device == torch.device("cpu"), \
+                    f"KV tensor must be on CPU, got {kv_tensor.device}"
+                self.kvstore.put_prefix_kv(prefix, kv_tensor)
+                
 
     def evict(self, num_tokens: int):
         leaves = self._collect_leaves_device()
