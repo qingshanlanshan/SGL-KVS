@@ -391,20 +391,23 @@ class HiRadixCache(RadixCache):
                     print(f"[HiRadixCache] load back cpu count: {len(loading_values) if loading_values is not None else 0}")
                     if loading_values is not None and last_cpu_node.id != last_node.id:
                         # load disk to cpu
-                        last_cpu_node = last_node
-                        while last_cpu_node.evicted and int(last_cpu_node.host_value[0]) in self.host_indices_to_kv_futures:
-                            for indice in last_cpu_node.host_value:
+                        disk_node = last_node
+                        while disk_node != last_cpu_node:
+                            for indice in disk_node.host_value:
                                 indice = int(indice.item())
                                 kv_future, index = self.host_indices_to_kv_futures.pop(indice, (None, None))
                                 assert kv_future is not None, \
                                     f"KV future for host value {indice} not found in host indices to kv futures"
                                 kv_tensor = kv_future.result()
                                 self.token_to_kv_pool_host.kv_buffer[:, :, indice, :, :] = kv_tensor[:, :, index, :, :].cpu()
+                            disk_node = disk_node.parent
                         # load cpu to gpu
                         new_values = self.load_back(last_node, mem_quota)
                         print(f"[HiRadixCache] load back disk count: {len(new_values) if new_values is not None else 0}", flush=True)
                         if new_values is not None:
                             loading_values = torch.cat([loading_values, new_values])
+                        else:
+                            last_node = last_cpu_node
             if loading_values is not None:
                 logger.debug(
                     f"loading back {len(loading_values)} tokens for node {last_node.id}"
