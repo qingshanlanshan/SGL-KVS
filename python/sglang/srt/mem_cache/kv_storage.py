@@ -40,6 +40,12 @@ class KVStorage:
         
         n_decompress: int = 0
         t_decompress: float = 0.0
+        
+        n_to_bytes: int = 0
+        t_to_bytes: float = 0.0
+        
+        n_from_bytes: int = 0
+        t_from_bytes: float = 0.0
 
     def __init__(
         self,
@@ -95,6 +101,10 @@ class KVStorage:
             f"Avg time: {self.statistics.t_compress / max(1, self.statistics.n_compress):.6f} seconds\n"
             f"[Decompress] Count: {self.statistics.n_decompress}, "
             f"Avg time: {self.statistics.t_decompress / max(1, self.statistics.n_decompress):.6f} seconds\n"
+            f"[Tensor to Bytes] Count: {self.statistics.n_to_bytes}, "
+            f"Avg time: {self.statistics.t_to_bytes / max(1, self.statistics.n_to_bytes):.6f} seconds\n"
+            f"[Bytes to Tensor] Count: {self.statistics.n_from_bytes}, "
+            f"Avg time: {self.statistics.t_from_bytes / max(1, self.statistics.n_from_bytes):.6f} seconds\n"
         )
 
     def _make_key(self, key: List[int]) -> bytes:
@@ -255,8 +265,6 @@ class KVStorage:
         key: List[int],
         kv_tensor: torch.Tensor,
     ):
-        self.statistics.n_db_puts += 1
-        start = time.perf_counter()
         key_bytes = self._make_key(key)
         if kv_tensor.shape[2] > 1:
             exist_key_len = self._probe_max_prefix(
@@ -273,6 +281,7 @@ class KVStorage:
 
         db_keys = [key_bytes[: (L + 1) * 4] for L in range(start_put_idx, len(key))]
 
+        start = time.perf_counter()
         if self.do_compress:
             db_values = [
                 self.compress(
@@ -289,10 +298,15 @@ class KVStorage:
                 .data.tobytes()
                 for L in range(start_put_idx, len(key))
             ]
+        end = time.perf_counter()
+        self.statistics.t_to_bytes += (end - start)
+        self.statistics.n_to_bytes += 1
         assert len(db_keys) == len(db_values), \
             f"Length mismatch: {len(db_keys)=} != {len(db_values)=}"
         assert all(db_value is not None for db_value in db_values), \
             "All db_values must be non-None"
+        self.statistics.n_db_puts += 1
+        start = time.perf_counter()
         status = self.db.batch_put(db_keys, db_values)
         assert status, "Batch put failed"
         end = time.perf_counter()
@@ -303,19 +317,17 @@ class KVStorage:
         matched_key: List[int],
         min_length: int,
     ) -> torch.Tensor:
-        matched_prefix_length = self._probe_max_prefix(
-            matched_key,
-            min_length=min_length,
-            max_length=len(matched_key)
-        )
-        assert matched_prefix_length == len(matched_key), \
-            f"Matched prefix length {matched_prefix_length} does not match key length {len(matched_key)}"
-        self.statistics.n_executor_gets += 1
-        start = time.perf_counter()
         dtype = self.dtype if self.dtype in [torch.float16, torch.float32, torch.float64] else torch.float32
         matched_key_bytes = self._make_key(matched_key)
         db_keys = [matched_key_bytes[:(L + 1) * 4] for L in range(min_length, len(matched_key))]
+        
+        self.statistics.n_executor_gets += 1
+        start = time.perf_counter()
         kv_cpu_raws = self.db.multiget(db_keys)
+        end = time.perf_counter()
+        self.statistics.t_executor_get += (end - start)
+        
+        start = time.perf_counter()
         kv_tensor = torch.stack(
             [
                 self.decompress(kv_cpu_raws[db_key]) if self.do_compress else
@@ -329,7 +341,9 @@ class KVStorage:
             dim=2,
         ).to(self.dtype)
         end = time.perf_counter()
-        self.statistics.t_executor_get += (end - start)
+        self.statistics.t_from_bytes += (end - start)
+        self.statistics.n_from_bytes += 1
+        
         return kv_tensor
 
     def wait_for_kv(
