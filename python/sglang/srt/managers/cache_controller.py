@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
     from sglang.srt.mem_cache.memory_pool_host import HostKVCache
 
-from sglang.srt.mem_cache.hicache_storage import HiCacheFile, get_hash_str
+from sglang.srt.mem_cache.hicache_storage import HiCacheFile, get_hash_str, HiCacheLSM
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +255,10 @@ class HiCacheController:
                 self.storage_backend = HiCacheFile()
                 self.enable_storage = True
                 # todo: threshold policy for prefetching
+                self.prefetch_threshold = max(prefetch_threshold, self.page_size)
+            elif storage_backend == "lsm":
+                self.storage_backend = HiCacheLSM()
+                self.enable_storage = True
                 self.prefetch_threshold = max(prefetch_threshold, self.page_size)
             else:
                 raise NotImplementedError(

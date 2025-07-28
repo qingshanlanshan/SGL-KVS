@@ -4,6 +4,9 @@ import os
 from abc import ABC, abstractmethod
 from typing import List, Optional
 
+import rocksdb_binding as rocksdb
+from safetensor_helper import SafetensorHelper
+
 import torch
 
 logger = logging.getLogger(__name__)
@@ -166,3 +169,88 @@ class HiCacheFile(HiCacheStorage):
             logger.info("Cleared all entries in HiCacheFile storage.")
         except Exception as e:
             logger.error(f"Failed to clear HiCacheFile storage: {e}")
+
+class HiCacheLSM(HiCacheStorage):
+    def __init__(self, db_path: str = "db", tensor_filename: str = "tensor"):
+        tp_rank = get_tensor_model_parallel_rank()
+        tp_size = get_tensor_model_parallel_world_size()
+        self.tp_suffix = f"_{tp_rank}_{tp_size}" if tp_size > 1 else ""
+        self.db_path = db_path
+        self.tensor_filename = tensor_filename
+        
+        
+        self.db = rocksdb.RocksDB()
+        print(f"Opening RocksDB at '{self.db_path}' with compression={self.do_compress}")
+        open_status = self.db.open(self.db_path)
+        assert open_status
+        
+        self.safetensor_helper = SafetensorHelper(self.db_path)
+        self.file_offset = 0
+
+    def _get_suffixed_key(self, key: str) -> str:
+        return key + self.tp_suffix
+
+    def int_tobytes(self, key: List[int] | int) -> bytes:
+        if isinstance(key, list):
+            assert all(
+                isinstance(k, int) for k in key
+            ), "All elements in the list must be integers."
+            return b"".join(
+                k.to_bytes(4, byteorder="little", signed=False) for k in key
+            )
+        assert isinstance(key, int), "Key must be an integer or a list of integers."
+        return key.to_bytes(4, byteorder="little", signed=False)
+
+    def int_frombytes(self, key: bytes) -> List[int]:
+        if len(key) % 4 != 0:
+            raise ValueError("Byte length must be a multiple of 4.")
+        return [
+            int.from_bytes(key[i : i + 4], byteorder="little", signed=False)
+            for i in range(0, len(key), 4)
+        ]
+
+    def get(
+        self, key: str, target_location: Optional[torch.Tensor] = None
+    ) -> torch.Tensor | None:
+        key = self._get_suffixed_key(key)
+        key = self.int_tobytes(key)
+        offset = self.db.get(key)
+        if offset is None:
+            return None
+        # byte to int
+        offsets = self.int_frombytes(offset)
+        kv_caches = self.safetensor_helper.load_kv_caches(self.tensor_filename, offsets)
+        kv_tensor = torch.stack(kv_caches[0], dim=0)
+        return kv_tensor
+        
+
+    def batch_get(
+        self,
+        keys: List[str],
+        target_locations: Optional[List[torch.Tensor]] = None,
+    ) -> List[torch.Tensor | None]:
+        return [
+            self.get(key, target_location)
+            for key, target_location in zip(
+                keys, target_locations or [None] * len(keys)
+            )
+        ]
+
+    def set(self, key: str, value: torch.Tensor) -> bool:
+        key = self._get_suffixed_key(key)
+        key = self.int_tobytes(key)
+        self.safetensor_helper.save_kv_caches(self.tensor_filename, [(value[0], value[1])])
+        self.db.put(key, self.int_tobytes(self.file_offset))
+        self.file_offset += 1
+        
+
+    def batch_set(self, keys: List[str], values: List[torch.Tensor]) -> bool:
+        for key, value in zip(keys, values):
+            if not self.set(key, value):
+                return False
+        return True
+
+    def exists(self, key: str) -> bool:
+        key = self._get_suffixed_key(key)
+        key = self.int_tobytes(key)
+        return self.db.probe(key)
