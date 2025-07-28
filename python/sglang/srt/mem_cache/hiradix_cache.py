@@ -19,6 +19,7 @@ from sglang.srt.mem_cache.memory_pool_host import (
     MLATokenToKVPoolHost,
 )
 from sglang.srt.mem_cache.radix_cache import RadixCache, TreeNode
+from sglang.srt.mem_cache.kv_storage import KVStorage
 
 logger = logging.getLogger(__name__)
 
@@ -82,8 +83,9 @@ class HiRadixCache(RadixCache):
         self.write_through_threshold_storage = 3
         self.load_back_threshold = 10
         super().__init__(
-            req_to_token_pool, token_to_kv_pool_allocator, page_size, disable=False
+            req_to_token_pool, token_to_kv_pool_allocator, page_size, disable=False, kvstore=kvstore
         )
+        self.host_indices_to_kv_futures = {}
 
     def reset(self):
         TreeNode.counter = 0
@@ -185,6 +187,89 @@ class HiRadixCache(RadixCache):
     def evictable_size(self):
         return self.evictable_size_
 
+    def _merge_kv_cache_cpu(self, kv_cache_cpu):
+        # kv_cache_cpu: List[layer_num][chunk_id][2]  -> [k_cpu, v_cpu]
+
+        layer_num = len(kv_cache_cpu)
+        k_list = []
+        v_list = []
+
+        for layer in kv_cache_cpu:
+            k_chunks = []
+            v_chunks = []
+            for k_cpu, v_cpu in layer:
+                k_chunks.append(k_cpu)
+                v_chunks.append(v_cpu)
+            # concat chunks along sequence dimension
+            k_cat = torch.cat(k_chunks, dim=0)
+            v_cat = torch.cat(v_chunks, dim=0)
+            k_list.append(k_cat)
+            v_list.append(v_cat)
+
+        # Stack across layer dimension -> shape: (layer_num, seq_len, ...)
+        k_stack = torch.stack(k_list, dim=0)
+        v_stack = torch.stack(v_list, dim=0)
+
+        # Final shape: (2, layer_num, seq_len, ...)
+        return torch.stack([k_stack, v_stack], dim=0)
+
+    def _backup_to_disk(
+        self,
+        node: TreeNode,
+    ):
+        # if node.evicted:
+        #     len_value = len(node.host_value)
+        # else:
+        #     len_value = len(node.value)
+        # if len_value > 512:
+        #     return
+        prefix: List[int] = node.key
+        cur_node = node
+        # get the whole key
+        while cur_node != self.root_node:
+            cur_node = cur_node.parent
+            prefix = cur_node.key + prefix
+            
+        # put the current node only
+        if False:
+            if node.host_value is not None:
+                kv_tensor = self.token_to_kv_pool_host.kv_buffer[
+                    :, :, node.host_value, :, :
+                ]
+            else:
+                kv_tensor = self.token_to_kv_pool_allocator.get_cpu_copy(node.value)
+                kv_tensor = self._merge_kv_cache_cpu(kv_tensor)
+            self.kvstore.put_prefix_kv(prefix, kv_tensor)
+            return
+        else:
+            max_prefix_length = self.kvstore._probe_max_prefix(
+                prefix, min_length=0, max_length=len(prefix)
+            )
+            
+            # put to db for each missing prefix
+            node_list = []
+            cur_node = node
+            prefix_len = len(prefix)
+            while cur_node != self.root_node and len(prefix) > max_prefix_length:
+                node_list.insert(0, cur_node)
+                prefix_len -= len(cur_node.key)
+                cur_node = cur_node.parent
+
+            for node in node_list:
+                prefix_len += len(node.key)
+                if node.evicted:
+                    kv_tensor = self.token_to_kv_pool_host.kv_buffer[
+                        :, :, node.host_value, :, :
+                    ]
+                else:
+                    kv_tensor = self.token_to_kv_pool_allocator.get_cpu_copy(node.value)
+                    kv_tensor = self._merge_kv_cache_cpu(kv_tensor)
+                    
+                assert kv_tensor.device == torch.device("cpu"), \
+                    f"KV tensor must be on CPU, got {kv_tensor.device}"
+
+                self.kvstore.put_prefix_kv(prefix[:prefix_len], kv_tensor)
+
     def evict(self, num_tokens: int):
         leaves = self._collect_leaves_device()
         heapq.heapify(leaves)
@@ -192,10 +277,13 @@ class HiRadixCache(RadixCache):
         num_evicted = 0
         write_back_nodes = []
         while num_evicted < num_tokens and len(leaves):
-            x = heapq.heappop(leaves)
+            x: TreeNode = heapq.heappop(leaves)
 
             if x.lock_ref > 0:
                 continue
+
+            if self.kvstore:
+                self._backup_to_disk(x)
 
             if not x.backuped:
                 if self.cache_controller.write_policy == "write_back":
@@ -243,7 +331,7 @@ class HiRadixCache(RadixCache):
 
         num_evicted = 0
         while num_evicted < num_tokens and len(leaves):
-            x = heapq.heappop(leaves)
+            x : TreeNode = heapq.heappop(leaves)
             if x == self.root_node:
                 break
             # only evict the host value of evicted nodes
@@ -316,6 +404,21 @@ class HiRadixCache(RadixCache):
 
         return device_indices
 
+    def _load_disk_to_cpu(
+        self,
+        node: TreeNode,
+    ):
+        assert node.evicted, "Node must be evicted to load from disk"
+        for indice in node.host_value:
+            indice = int(indice.item())
+            kv_future, index = self.host_indices_to_kv_futures.pop(indice, (None, None))
+            if kv_future is None:
+                return
+            kv_tensor = self.kvstore.wait_for_kv(kv_future)
+            self.token_to_kv_pool_host.kv_buffer[:, :, indice, :, :] = kv_tensor[
+                :, :, index, :, :
+            ].cpu()
+
     def init_load_back(
         self,
         last_node: TreeNode,
@@ -324,11 +427,43 @@ class HiRadixCache(RadixCache):
     ):
         _ = host_hit_length  # unused, but kept for compatibility
         if last_node.evicted:
-            loading_values = self.load_back(last_node, mem_quota)
+            if not self.kvstore:
+                loading_values = self.load_back(last_node, mem_quota)
+            else:
+                # gpu nodes - cpu nodes - (last_cpu_node) - disk nodes - (last_node)
+                loading_values = None
+                last_cpu_node = last_node
+                while last_cpu_node.evicted and int(last_cpu_node.host_value[0]) in self.host_indices_to_kv_futures:
+                    last_cpu_node = last_cpu_node.parent
+
+                # load cpu nodes
+                if last_cpu_node.evicted:
+                    loading_values = self.load_back(last_cpu_node, mem_quota)
+
+                if last_cpu_node.evicted:
+                    # no sufficient GPU memory to load back KV caches
+                    assert loading_values is None, "Loading values should be None if loading back failed"
+                elif last_cpu_node.id != last_node.id:
+                    # load disk to cpu
+                    disk_node = last_node
+                    while disk_node != last_cpu_node:
+                        self._load_disk_to_cpu(disk_node)
+                        disk_node = disk_node.parent
+                    # load cpu to gpu
+                    new_values = self.load_back(last_node, mem_quota)
+                    if new_values is None:
+                        last_node = last_cpu_node
+                    if loading_values is None:
+                        loading_values = new_values
+                    elif new_values is not None:
+                        loading_values = torch.cat([loading_values, new_values]) 
+
             if loading_values is not None:
                 logger.debug(
                     f"loading back {len(loading_values)} tokens for node {last_node.id}"
                 )
+                assert not last_node.evicted, \
+                    f"Node {last_node.id} should not be evicted after loading back"
                 return loading_values, last_node
 
             while last_node.evicted:
@@ -458,6 +593,55 @@ class HiRadixCache(RadixCache):
             value = torch.cat(value)
         else:
             value = empty_value
+
+        # fetch kv tensor from disk to host
+        if self.kvstore:
+            host_hit_length = 0
+            last_host_node = last_node
+            while last_node.evicted:
+                host_hit_length += len(last_node.host_value)
+                last_node = last_node.parent
+
+            tree_hit_length = host_hit_length + value.shape[0]
+            last_node = last_host_node
+
+            # get kv tensor
+            disk_match_length, kv_future = self.kvstore.get_prefix_kv(
+                key,
+                tree_hit_length,
+                len(key),
+            )
+            # insert into radix tree
+            if disk_match_length > tree_hit_length:
+                # allocate memory
+                need_size = disk_match_length - tree_hit_length
+                kv_indices = self.token_to_kv_pool_host.alloc(need_size)
+                if kv_indices is None:
+                    self.evict_host(need_size)
+                    kv_indices = self.token_to_kv_pool_host.alloc(need_size)
+
+                assert kv_indices is not None, \
+                    f"Failed to allocate {need_size} indices from host kv pool"
+                assert len(kv_indices) == need_size, \
+                    f"Allocated {len(kv_indices)} indices, expected {need_size}"
+                assert kv_future is not None, \
+                    f"KV future for key {key} not found in kvstore"
+
+                if kv_indices is not None:
+                    for i, indice in enumerate(kv_indices):
+                        indice = int(indice.item())
+                        self.host_indices_to_kv_futures[indice] = (kv_future, i)
+                    child_key = key[tree_hit_length:disk_match_length]
+                    new_node = TreeNode()
+                    new_node.parent = last_node
+                    new_node.key = child_key
+                    new_node.value = None
+                    new_node.host_value = kv_indices
+                    last_node.children[self.get_child_key_fn(child_key)] = new_node
+                    # self.evictable_size_ += len(kv_indices)
+                    if self.cache_controller.write_policy != "write_back":
+                        self.inc_hit_count(new_node)
+                    last_node = new_node
 
         host_hit_length = 0
         last_host_node = last_node
