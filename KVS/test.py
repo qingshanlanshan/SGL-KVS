@@ -215,8 +215,7 @@ if __name__ == "__main__":
 
     enable_hierarchical_cache = args.enable_hierarchical_cache
     output_file = args.output_file
-    # if args.kvstore_compress:
-    #     assert enable_kvstore, "KVStore compression can only be enabled when KVStore is enabled."
+
     server_process, port = start_server(enable_hierarchical_cache, args.hicache_storage_backend)
     tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
 

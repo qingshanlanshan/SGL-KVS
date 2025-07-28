@@ -264,9 +264,6 @@ class ServerArgs:
     # For model weight update
     custom_weight_loader: Optional[List[str]] = None
     weight_loader_disable_mmap: bool = False
-    
-    enable_kvstore: bool = False
-    kvstore_compress: bool = False
 
     # For PD-Multiplexing
     enable_pdmux: bool = False
@@ -1812,16 +1809,6 @@ class ServerArgs:
             "--weight-loader-disable-mmap",
             action="store_true",
             help="Disable mmap while loading weight using safetensors.",
-        )
-        parser.add_argument(
-            "--enable-kvstore",
-            action="store_true",
-            help="Enable KV store for hiradix cache.",
-        )
-        parser.add_argument(
-            "--kvstore-compress",
-            action="store_true",
-            help="Enable compression for KV store.",
         )
 
     @classmethod

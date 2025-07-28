@@ -162,7 +162,6 @@ from sglang.srt.utils import (
     suppress_other_loggers,
 )
 from sglang.utils import TypeBasedDispatcher, get_exception_traceback
-from sglang.srt.mem_cache.kv_storage import KVStorage
 
 logger = logging.getLogger(__name__)
 
@@ -419,7 +418,6 @@ class Scheduler(
                 f"context_len={self.model_config.context_len}, "
                 f"available_gpu_mem={avail_mem:.2f} GB"
             )
-        self.kvstore = None
         # Init memory pool and cache
         self.init_memory_pool_and_cache()
 
@@ -603,16 +601,6 @@ class Scheduler(
             )
         else:
             if self.enable_hierarchical_cache:
-                if server_args.enable_kvstore:
-                    self.kvstore = KVStorage(
-                        dtype=self.model_config.dtype,
-                        head_num=self.model_config.num_key_value_heads,
-                        head_dim=self.model_config.head_dim,
-                        layer_num=self.model_config.num_hidden_layers,
-                        compress=server_args.kvstore_compress,
-                    )
-                else:
-                    self.kvstore = None
                 self.tree_cache = HiRadixCache(
                     req_to_token_pool=self.req_to_token_pool,
                     token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
