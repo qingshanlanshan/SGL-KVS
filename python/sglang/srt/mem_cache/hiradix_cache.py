@@ -485,6 +485,7 @@ class HiRadixCache(RadixCache):
         )
         new_input_tokens = new_input_tokens[:prefetch_length]
         if not self.enable_storage or prefetch_length < self.prefetch_threshold:
+            print(f"[Prefetch] Skipping prefetch: {prefetch_length=}, {self.prefetch_threshold=}")
             return
 
         last_host_node.protect_host()
@@ -495,6 +496,7 @@ class HiRadixCache(RadixCache):
         if host_indices is None:
             last_host_node.release_host()
             # no sufficient host memory to prefetch
+            print(f"[Prefetch] No sufficient host memory to prefetch {prefetch_length} tokens.")
             return
         operation = self.cache_controller.prefetch(
             req_id, host_indices, new_input_tokens, last_hash

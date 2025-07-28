@@ -48,7 +48,7 @@ class HiCacheStorage(ABC):
         Retrieve the value associated with the given key.
         Returns None if the key does not exist.
         """
-        pass
+        raise NotImplementedError("[HiCacheStorage] get method not implemented")
 
     @abstractmethod
     def batch_get(
@@ -58,7 +58,7 @@ class HiCacheStorage(ABC):
         Retrieve values for multiple keys.
         Returns a list of tensors or None for each key.
         """
-        pass
+        raise NotImplementedError("[HiCacheStorage] batch_get method not implemented")
 
     @abstractmethod
     def set(self, key, value) -> bool:
@@ -66,7 +66,7 @@ class HiCacheStorage(ABC):
         Store the value associated with the given key.
         Returns True if the operation was successful, False otherwise.
         """
-        pass
+        raise NotImplementedError("[HiCacheStorage] set method not implemented")
 
     @abstractmethod
     def batch_set(self, keys: List[str], values: List[torch.Tensor]) -> bool:
@@ -74,7 +74,7 @@ class HiCacheStorage(ABC):
         Store multiple key-value pairs.
         Returns True if all operations were successful, False otherwise.
         """
-        pass
+        raise NotImplementedError("[HiCacheStorage] batch_set method not implemented")
 
     @abstractmethod
     def exists(self, key: str) -> bool:
@@ -82,7 +82,7 @@ class HiCacheStorage(ABC):
         Check if the key exists in the storage.
         Returns True if the key exists, False otherwise.
         """
-        pass
+        raise NotImplementedError("[HiCacheStorage] exists method not implemented")
 
 
 class HiCacheFile(HiCacheStorage):
@@ -102,6 +102,7 @@ class HiCacheFile(HiCacheStorage):
     def get(
         self, key: str, target_location: Optional[torch.Tensor] = None
     ) -> torch.Tensor | None:
+        print(f"[HiCacheFile] get key: {key}, target_location: {target_location}")
         key = self._get_suffixed_key(key)
         tensor_path = os.path.join(self.file_path, f"{key}.bin")
         try:
@@ -180,7 +181,7 @@ class HiCacheLSM(HiCacheStorage):
         
         
         self.db = rocksdb.RocksDB()
-        print(f"Opening RocksDB at '{self.db_path}' with compression={self.do_compress}")
+        print(f"Opening RocksDB at '{self.db_path}'")
         open_status = self.db.open(self.db_path)
         assert open_status
         
@@ -189,6 +190,11 @@ class HiCacheLSM(HiCacheStorage):
 
     def _get_suffixed_key(self, key: str) -> str:
         return key + self.tp_suffix
+    
+    def str_tobytes(self, key: str) -> bytes:
+        if isinstance(key, str):
+            return key.encode("utf-8")
+        raise TypeError("Key must be a string.")
 
     def int_tobytes(self, key: List[int] | int) -> bytes:
         if isinstance(key, list):
@@ -212,8 +218,9 @@ class HiCacheLSM(HiCacheStorage):
     def get(
         self, key: str, target_location: Optional[torch.Tensor] = None
     ) -> torch.Tensor | None:
+        print(f"[HiCacheLSM] get key: {key}, target_location: {target_location}")
         key = self._get_suffixed_key(key)
-        key = self.int_tobytes(key)
+        key = self.str_tobytes(key)
         offset = self.db.get(key)
         if offset is None:
             return None
@@ -238,10 +245,11 @@ class HiCacheLSM(HiCacheStorage):
 
     def set(self, key: str, value: torch.Tensor) -> bool:
         key = self._get_suffixed_key(key)
-        key = self.int_tobytes(key)
+        key = self.str_tobytes(key)
         self.safetensor_helper.save_kv_caches(self.tensor_filename, [(value[0], value[1])])
-        self.db.put(key, self.int_tobytes(self.file_offset))
+        status = self.db.put(key, self.int_tobytes(self.file_offset))
         self.file_offset += 1
+        return status
         
 
     def batch_set(self, keys: List[str], values: List[torch.Tensor]) -> bool:
