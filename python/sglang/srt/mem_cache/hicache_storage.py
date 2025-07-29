@@ -6,6 +6,12 @@ from typing import List, Optional
 
 import torch
 
+from dataclasses import dataclass
+import threading
+import time
+import rocksdb_binding as rocksdb
+from safetensor_helper import SafetensorHelper
+
 logger = logging.getLogger(__name__)
 
 
@@ -166,3 +172,141 @@ class HiCacheFile(HiCacheStorage):
             logger.info("Cleared all entries in HiCacheFile storage.")
         except Exception as e:
             logger.error(f"Failed to clear HiCacheFile storage: {e}")
+
+class HiCacheLSM(HiCacheStorage):
+    @dataclass
+    class Statistics:
+        n_gets: int = 0
+        t_gets: float = 0.0
+        n_sets: int = 0
+        t_sets: float = 0.0
+        n_exists: int = 0
+        t_exists: float = 0.0
+        
+        def __init__(self):
+            self.print_interval = 1  # Print statistics every 1 second
+            self._stats_thread = threading.Thread(target=self.print_stats, daemon=True)
+            self._stats_thread.start()
+            
+        def print_stats(self):
+            while True:
+                time.sleep(self.print_interval)
+                logger.info(self.__str__())
+        
+        def __str__(self):
+            return (
+                f"\n\n[HiCacheLSM] Statistics:\n"
+                f"[Gets] Count: {self.n_gets}, Avg Time: {self.t_gets / max(1, self.n_gets):.6f}s\n"
+                f"[Sets] Count: {self.n_sets}, Avg Time: {self.t_sets / max(1, self.n_sets):.6f}s\n"
+                f"[Exists] Count: {self.n_exists}, Avg Time: {self.t_exists / max(1, self.n_exists):.6f}s\n"
+            )
+            
+        
+    def __init__(self, db_path: str = "db", tensor_filename: str = "tensor"):
+        tp_rank = get_tensor_model_parallel_rank()
+        tp_size = get_tensor_model_parallel_world_size()
+        self.tp_suffix = f"_{tp_rank}_{tp_size}" if tp_size > 1 else ""
+        self.db_path = db_path
+        self.tensor_filename = tensor_filename
+        self.file_count = 0
+        
+        self.db = rocksdb.RocksDB()
+        print(f"Opening RocksDB at '{self.db_path}'", flush=True)
+        open_status = self.db.open(self.db_path)
+        assert open_status
+        
+        self.safetensor_helper = SafetensorHelper(self.db_path)
+        
+        self.statistics = self.Statistics()
+
+    def _get_filename(self, fileno) -> str:
+        return f"{self.tensor_filename}_{fileno}"
+
+    def _get_suffixed_key(self, key: str) -> str:
+        return key + self.tp_suffix
+
+    def _int_tobytes(self, key: List[int] | int) -> bytes:
+        if isinstance(key, int):
+            return key.to_bytes(4, byteorder="little", signed=False)
+        return b"".join(
+            k.to_bytes(4, byteorder="little", signed=False) for k in key
+        )
+
+    def _int_frombytes(self, key: bytes) -> List[int] | int:
+        if len(key) % 4 != 0:
+            raise ValueError("Byte length must be a multiple of 4.")
+        if len(key) == 4:
+            return int.from_bytes(key, byteorder="little", signed=False)
+        return [
+            int.from_bytes(key[i : i + 4], byteorder="little", signed=False)
+            for i in range(0, len(key), 4)
+        ]
+        
+    def db_value_tobytes(self, fileno: int, offset: int) -> bytes:
+        return self._int_tobytes(fileno) + self._int_tobytes(offset)
+    def db_value_frombytes(self, value: bytes) -> tuple[int, int]:
+        if len(value) != 8:
+            raise ValueError("Value must be 8 bytes long.")
+        fileno = int.from_bytes(value[:4], byteorder="little", signed=False)
+        offset = int.from_bytes(value[4:8], byteorder="little", signed=False)
+        return fileno, offset
+
+    def get(
+        self, key: str, target_location: Optional[torch.Tensor] = None
+    ) -> torch.Tensor | None:
+        self.statistics.n_gets += 1
+        start_time = time.time()
+        key = self._get_suffixed_key(key)
+        db_value = self.db.get(key.encode("utf-8"))
+        if db_value is None:
+            self.statistics.t_gets += time.time() - start_time
+            return None
+        # byte to int
+        fileno, offset = self.db_value_frombytes(db_value)
+        kv_caches = self.safetensor_helper.load_kv_caches(
+            self._get_filename(fileno), offsets=[offset]
+        )
+        kv_tensor = torch.stack(kv_caches[0], dim=0)
+        self.statistics.t_gets += time.time() - start_time
+        return kv_tensor
+        
+
+    def batch_get(
+        self,
+        keys: List[str],
+        target_locations: Optional[List[torch.Tensor]] = None,
+    ) -> List[torch.Tensor | None]:
+        return [
+            self.get(key, target_location)
+            for key, target_location in zip(
+                keys, target_locations or [None] * len(keys)
+            )
+        ]
+
+    def set(self, key: str, value: torch.Tensor) -> bool:
+        self.statistics.n_sets += 1
+        start_time = time.time()
+        key = self._get_suffixed_key(key)
+        self.safetensor_helper.save_kv_caches(self.tensor_filename, [(value[0], value[1])])
+        status = self.db.put(
+            key.encode("utf-8"), 
+            self.db_value_tobytes(self.file_count, 0)
+        )
+        self.file_count += 1
+        self.statistics.t_sets += time.time() - start_time
+        return status
+        
+
+    def batch_set(self, keys: List[str], values: List[torch.Tensor]) -> bool:
+        for key, value in zip(keys, values):
+            if not self.set(key, value):
+                return False
+        return True
+
+    def exists(self, key: str) -> bool:
+        self.statistics.n_exists += 1
+        start_time = time.time()
+        key = self._get_suffixed_key(key)
+        exists = self.db.probe(key.encode("utf-8"))
+        self.statistics.t_exists += time.time() - start_time
+        return exists
