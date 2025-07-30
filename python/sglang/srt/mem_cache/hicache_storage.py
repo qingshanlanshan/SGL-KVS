@@ -181,6 +181,7 @@ class HiCacheLSM(HiCacheStorage):
         n_sets: int = 0
         t_sets: float = 0.0
         n_exists: int = 0
+        n_exists_true: int = 0
         t_exists: float = 0.0
         
         def __init__(self):
@@ -198,7 +199,7 @@ class HiCacheLSM(HiCacheStorage):
                 f"\n\n[HiCacheLSM] Statistics:\n"
                 f"[Gets] Count: {self.n_gets}, Avg Time: {self.t_gets / max(1, self.n_gets):.6f}s\n"
                 f"[Sets] Count: {self.n_sets}, Avg Time: {self.t_sets / max(1, self.n_sets):.6f}s\n"
-                f"[Exists] Count: {self.n_exists}, Avg Time: {self.t_exists / max(1, self.n_exists):.6f}s\n"
+                f"[Exists] Count: {self.n_exists}, Avg Time: {self.t_exists / max(1, self.n_exists):.6f}s, Exists True: {self.n_exists_true}\n"
             )
             
         
@@ -255,11 +256,11 @@ class HiCacheLSM(HiCacheStorage):
         self, key: str, target_location: Optional[torch.Tensor] = None
     ) -> torch.Tensor | None:
         self.statistics.n_gets += 1
-        start_time = time.time()
+        start_time = time.perf_counter()
         key = self._get_suffixed_key(key)
         db_value = self.db.get(key.encode("utf-8"))
         if db_value is None:
-            self.statistics.t_gets += time.time() - start_time
+            self.statistics.t_gets += time.perf_counter() - start_time
             return None
         # byte to int
         fileno, offset = self.db_value_frombytes(db_value)
@@ -267,7 +268,7 @@ class HiCacheLSM(HiCacheStorage):
             self._get_filename(fileno), offsets=[offset]
         )
         kv_tensor = torch.stack(kv_caches[0], dim=0)
-        self.statistics.t_gets += time.time() - start_time
+        self.statistics.t_gets += time.perf_counter() - start_time
         return kv_tensor
         
 
@@ -276,37 +277,66 @@ class HiCacheLSM(HiCacheStorage):
         keys: List[str],
         target_locations: Optional[List[torch.Tensor]] = None,
     ) -> List[torch.Tensor | None]:
-        return [
-            self.get(key, target_location)
-            for key, target_location in zip(
-                keys, target_locations or [None] * len(keys)
+        db_keys = [self._get_suffixed_key(key).encode("utf-8") for key in keys]
+        db_values = self.db.multiget(db_keys)
+
+        location_dict = {}
+        for i, db_value in enumerate(db_values):
+            offset, idx = self.db_value_frombytes(db_value)
+            if fileno not in location_dict:
+                location_dict[fileno] = [[],[]]
+            location_dict[fileno][0].append(offset)
+            location_dict[fileno][1].append(idx)
+            
+        results = [None] * len(keys)
+        for fileno, (offsets, idx) in location_dict.items():
+            kv_caches = self.safetensor_helper.load_kv_caches(
+                self._get_filename(fileno), offsets=offsets
             )
-        ]
+            kv_tensors = [torch.stack(kv_cache, dim=0) for kv_cache in kv_caches]
+            for i, idx in enumerate(idx):
+                results[idx] = kv_tensors[i]
+        return results
 
     def set(self, key: str, value: torch.Tensor) -> bool:
         self.statistics.n_sets += 1
-        start_time = time.time()
+        start_time = time.perf_counter()
         key = self._get_suffixed_key(key)
-        self.safetensor_helper.save_kv_caches(self.tensor_filename, [(value[0], value[1])])
+        self.safetensor_helper.save_kv_caches(self._get_filename(self.file_count), [(value[0], value[1])])
         status = self.db.put(
             key.encode("utf-8"), 
             self.db_value_tobytes(self.file_count, 0)
         )
         self.file_count += 1
-        self.statistics.t_sets += time.time() - start_time
+        self.statistics.t_sets += time.perf_counter() - start_time
         return status
         
 
     def batch_set(self, keys: List[str], values: List[torch.Tensor]) -> bool:
-        for key, value in zip(keys, values):
-            if not self.set(key, value):
-                return False
-        return True
+        self.statistics.n_sets += len(keys)
+        start_time = time.perf_counter()
+        db_keys = [self._get_suffixed_key(key).encode("utf-8") for key in keys]
+        tensors = [(value[0], value[1]) for value in values]
+        db_values = [
+            self.db_value_tobytes(self.file_count, i) for i in range(len(tensors))
+        ]
+        self.safetensor_helper.save_kv_caches(
+            self._get_filename(self.file_count), db_values
+        )
+        status = self.db.batch_put_original(
+            db_keys, db_values
+        )
+        self.file_count += 1
+        self.statistics.t_sets += time.perf_counter() - start_time
+        return status
+
 
     def exists(self, key: str) -> bool:
         self.statistics.n_exists += 1
-        start_time = time.time()
+        start_time = time.perf_counter()
         key = self._get_suffixed_key(key)
         exists = self.db.probe(key.encode("utf-8"))
-        self.statistics.t_exists += time.time() - start_time
+        if exists:
+            self.statistics.n_exists_true += 1
+        self.statistics.t_exists += time.perf_counter() - start_time
         return exists

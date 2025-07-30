@@ -24,6 +24,7 @@ def start_server(enable_hierarchical_cache:bool = False, hicache_storage_backend
     --disable-overlap-schedule \
     --attention-backend torch_native \
     --dtype float16 \
+    --log-level debug \
     --enable-hierarchical-cache \
     --hicache-ratio 1.5 \
     --hicache-write-policy write_through \

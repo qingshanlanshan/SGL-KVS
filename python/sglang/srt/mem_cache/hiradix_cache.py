@@ -392,6 +392,7 @@ class HiRadixCache(RadixCache):
                 # backup is only partially successful, split the node
                 new_node = self._split_node(host_node.key, host_node, completed_tokens)
                 new_node.hash_value = hash_value
+            host_node.hash_value = hash_value[:completed_tokens]
             host_node.release_host()
             del self.ongoing_backup[ack_id]
 

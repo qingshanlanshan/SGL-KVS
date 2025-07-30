@@ -235,3 +235,8 @@ compile_commands.json
 Cargo.lock
 
 lmms-eval
+
+KVS/db
+KVS/kv_cache_storage
+KVS/*.log
+KVS/*.txt
