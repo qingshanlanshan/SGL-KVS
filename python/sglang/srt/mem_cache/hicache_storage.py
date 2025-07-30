@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import threading
 import time
 import rocksdb_binding as rocksdb
-from safetensor_helper import SafetensorHelper
+from sglang.srt.mem_cache.safetensor_helper import SafetensorHelper
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +90,7 @@ class HiCacheStorage(ABC):
 
 class HiCacheFile(HiCacheStorage):
 
-    def __init__(self, file_path: str = "/tmp/hicache"):
+    def __init__(self, file_path: str = "file_storage"):
         self.file_path = file_path
         tp_rank = get_tensor_model_parallel_rank()
         tp_size = get_tensor_model_parallel_world_size()
@@ -216,7 +216,7 @@ class HiCacheLSM(HiCacheStorage):
         open_status = self.db.open(self.db_path)
         assert open_status
         
-        self.safetensor_helper = SafetensorHelper(self.db_path)
+        self.safetensor_helper = SafetensorHelper(storage_dir = self.db_path)
         
         self.statistics = self.Statistics()
 
@@ -301,6 +301,9 @@ class HiCacheLSM(HiCacheStorage):
     def set(self, key: str, value: torch.Tensor) -> bool:
         self.statistics.n_sets += 1
         start_time = time.perf_counter()
+        if self.exists(key):
+            logger.debug(f"Key {key} already exists. Skipped.")
+            return True
         key = self._get_suffixed_key(key)
         self.safetensor_helper.save_kv_caches(self._get_filename(self.file_count), [(value[0], value[1])])
         status = self.db.put(

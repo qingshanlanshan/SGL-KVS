@@ -237,6 +237,6 @@ Cargo.lock
 lmms-eval
 
 KVS/db
-KVS/kv_cache_storage
+KVS/file_storage
 KVS/*.log
 KVS/*.txt

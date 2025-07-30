@@ -22,9 +22,7 @@ def start_server(enable_hierarchical_cache:bool = False, hicache_storage_backend
     --model-path meta-llama/Llama-3.1-8B \
     --host 0.0.0.0 \
     --disable-overlap-schedule \
-    --attention-backend torch_native \
     --dtype float16 \
-    --log-level debug \
     --enable-hierarchical-cache \
     --hicache-ratio 1.5 \
     --hicache-write-policy write_through \

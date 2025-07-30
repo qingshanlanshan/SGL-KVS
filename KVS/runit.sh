@@ -6,7 +6,7 @@ prompt_token_num=1024
 max_new_tokens=1
 
 rm -rf db
-rm -rf kv_cache_storage
+rm -rf file_storage
 
 # origin sglang
 python test.py --num-requests $num_requests \
@@ -36,7 +36,7 @@ echo max_new_tokens=$max_new_tokens
 echo "================== Results ==================="
 echo "SGLang"
 tail -n 1 output.txt
-echo "KVS (warmup)"
+echo "backend file"
 tail -n 1 test_backend_file.txt
-echo "KVS"
+echo "backend lsm"
 tail -n 1 test_backend_lsm.txt

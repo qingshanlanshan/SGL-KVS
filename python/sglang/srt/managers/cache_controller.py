@@ -260,7 +260,7 @@ class HiCacheController:
             elif storage_backend == "lsm":
                 self.storage_backend = HiCacheLSM()
                 self.enable_storage = True
-                self.prefetch_threshold = max(prefetch_threshold, self.page_size)
+                self.prefetch_threshold = 0
             else:
                 raise NotImplementedError(
                     f"Unsupported storage backend: {storage_backend}"
