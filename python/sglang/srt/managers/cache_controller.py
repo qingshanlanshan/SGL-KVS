@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
     from sglang.srt.mem_cache.memory_pool_host import HostKVCache
 
-from sglang.srt.mem_cache.hicache_storage import HiCacheFile, get_hash_str, HiCacheLSM
+from sglang.srt.mem_cache.hicache_storage import HiCacheFile, get_hash_str, HiCacheLSM, HiCacheBlob
 from sglang.srt.mem_cache.storage.hf3fs.storage_hf3fs import HiCacheHF3FS
 
 logger = logging.getLogger(__name__)
@@ -272,7 +272,8 @@ class HiCacheController:
                     rank, bytes_per_page, dtype
                 )
             elif storage_backend == "lsm":
-                self.storage_backend = HiCacheLSM()
+                # self.storage_backend = HiCacheLSM()
+                self.storage_backend = HiCacheBlob()
             else:
                 raise NotImplementedError(
                     f"Unsupported storage backend: {storage_backend}"

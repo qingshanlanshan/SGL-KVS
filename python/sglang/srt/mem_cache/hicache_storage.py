@@ -402,11 +402,112 @@ class HiCacheLSM(HiCacheStorage):
         key = self._get_suffixed_key(key)
         return self.db.probe(key.encode("utf-8"))
 
+class HiCacheBlob(HiCacheStorage):
+    def __init__(self, db_path: str = "db", tensor_filename: str = "tensor"):
+        try:
+            tp_rank = get_tensor_model_parallel_rank()
+            tp_size = get_tensor_model_parallel_world_size()
+        except Exception as e:
+            logger.warning(f"Failed to get tensor model parallel rank/size: {e}. Defaulting to 0 and 1.")
+            tp_rank = 0
+            tp_size = 1
+        self.tp_suffix = f"_{tp_rank}_{tp_size}" if tp_size > 1 else ""
+        self.db_path = os.getenv("SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR", db_path)
+        
+        self.db = rocksdb.RocksDB(blobdb=True)
+        print(f"Opening RocksDB at '{self.db_path}'", flush=True)
+        open_status = self.db.open(self.db_path)
+        assert open_status
+
+        self.statistics = HiCacheStorage.Statistics()
+        self._start_stats_thread()
+        
+    def _compress(
+        self,
+        kv_tensor: torch.Tensor,
+    ) -> bytes:
+        max_val = torch.abs(kv_tensor).max().item()
+        if max_val == 0:
+            scale_factor = 1.0
+        else:
+            scale_factor = 127.0 / max_val
+        quantized_tensor = (kv_tensor * scale_factor).clamp(-127, 127).round().to(torch.uint8)
+        quantized_bytes = quantized_tensor.cpu().contiguous().numpy().tobytes()
+        scale_bytes = torch.tensor(scale_factor, dtype=torch.float16).cpu().contiguous().numpy().tobytes()
+        
+        return quantized_bytes + scale_bytes
+    
+    def _decompress(
+        self,
+        compressed_value: bytes,
+    ):
+        if compressed_value is None:
+            return None
+        quantized_tensor = torch.frombuffer(
+            compressed_value[: -2], 
+            dtype=torch.uint8,
+        ).to(torch.float16)
+        scale = torch.frombuffer(
+            compressed_value[-2:],
+            dtype=torch.float16,
+        ).item()
+        return quantized_tensor / scale
+
+    def _get_suffixed_key(self, key: str) -> str:
+        return key + self.tp_suffix
+    
+    def get(
+        self, key: str, target_location: Optional[torch.Tensor] = None
+    ) -> torch.Tensor | None:
+        key = self._get_suffixed_key(key).encode("utf-8")
+        compressed_value = self.db.get(key)
+        if compressed_value is None:
+            return None
+        return self._decompress(compressed_value)
+    
+    def batch_get(
+        self,
+        keys: List[str],
+        target_locations: Optional[List[torch.Tensor]] = None,
+    ) -> List[torch.Tensor | None]:
+        db_keys = [self._get_suffixed_key(key).encode("utf-8") for key in keys]
+        result_dict = self.db.multiget(db_keys)
+        
+        results = [self._decompress(compressed_value) for compressed_value in result_dict.values()]
+        return results
+
+    def set(self, key: str, value: torch.Tensor) -> bool:
+        key = self._get_suffixed_key(key).encode("utf-8")
+        if self.exists(key):
+            return True
+        compressed_value = self._compress(value)
+        status = self.db.put(key, compressed_value)
+        return status
+    
+    def batch_set(self, keys: List[str], values: List[torch.Tensor]) -> bool:
+        db_keys = []
+        compressed_values = []
+        for key, value in zip(keys, values):
+            if self.exists(key):
+                continue
+            db_keys.append(self._get_suffixed_key(key).encode("utf-8"))
+            compressed_values.append(self._compress(value))
+        if len(db_keys) == 0:
+            return True
+        status = self.db.batch_put(db_keys, compressed_values)
+        return status
+
+    def exists(self, key: str) -> bool:
+        key = self._get_suffixed_key(key)
+        return self.db.probe(key.encode("utf-8"))
+
+
 if __name__ == "__main__":
     import random
     # Example usage
     os.system("rm -rf db/*")
-    storage = HiCacheLSM("db")
+    # storage = HiCacheLSM("db")
+    storage = HiCacheBlob("db")
     key = "example_key"
     value = torch.rand(2, 2, dtype=torch.float16)
     storage.set(key, value)
@@ -420,7 +521,7 @@ if __name__ == "__main__":
     assert torch.allclose(retrieved_value, value, rtol=1e-1), "single put & get failed"
     retrieved_values = storage.batch_get(keys)
     assert all(
-        torch.allclose(retrieved_values[i], values[i], rtol=1e-1)
+        torch.allclose(retrieved_values[i], values[i], atol=1e-1)
         for i in range(len(keys))
     ), "batch put & get failed"
     
@@ -430,7 +531,7 @@ if __name__ == "__main__":
         exists = storage.exists(key)
         assert exists == True, f"exists check failed for {key}"
         retrieved_value = storage.get(key)
-        assert torch.allclose(retrieved_value, values[random_int], rtol=1e-1), f"get failed for {key}"
+        assert torch.allclose(retrieved_value, values[random_int], atol=1e-1), f"get failed for {key}"
     
     print(storage.statistics)
     print("All tests passed!")
