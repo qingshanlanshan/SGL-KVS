@@ -95,9 +95,9 @@ class HiCacheStorage(ABC):
     def __init_subclass__(cls):
         super().__init_subclass__()
         method_map = {
-            "get": ("get", False),
+            # "get": ("get", False),
             "batch_get": ("get", True),
-            "set": ("set", False),
+            # "set": ("set", False),
             "batch_set": ("set", True),
             "exists": ("exist", False),
         }
@@ -255,7 +255,7 @@ class HiCacheLSM(HiCacheStorage):
         tp_rank = get_tensor_model_parallel_rank()
         tp_size = get_tensor_model_parallel_world_size()
         self.tp_suffix = f"_{tp_rank}_{tp_size}" if tp_size > 1 else ""
-        self.db_path = db_path
+        self.db_path = os.getenv("SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR", db_path)
         self.tensor_filename = tensor_filename
         self.file_count = 0
         
@@ -296,7 +296,7 @@ class HiCacheLSM(HiCacheStorage):
         return self._int_tobytes(fileno) + self._int_tobytes(offset)
     def db_value_frombytes(self, value: bytes) -> tuple[int, int]:
         if len(value) != 8:
-            raise ValueError("Value must be 8 bytes long.")
+            raise ValueError(f"Value must be 8 bytes long, got {len(value)}.")
         fileno = int.from_bytes(value[:4], byteorder="little", signed=False)
         offset = int.from_bytes(value[4:8], byteorder="little", signed=False)
         return fileno, offset
@@ -322,11 +322,17 @@ class HiCacheLSM(HiCacheStorage):
         keys: List[str],
         target_locations: Optional[List[torch.Tensor]] = None,
     ) -> List[torch.Tensor | None]:
+        return [
+            self.get(key, target_location)
+            for key, target_location in zip(
+                keys, target_locations or [None] * len(keys)
+            )
+        ]
         db_keys = [self._get_suffixed_key(key).encode("utf-8") for key in keys]
         db_values = self.db.multiget(db_keys)
-
+        
         location_dict = {}
-        for i, db_value in enumerate(db_values):
+        for db_key, db_value in db_values.items():
             offset, idx = self.db_value_frombytes(db_value)
             if fileno not in location_dict:
                 location_dict[fileno] = [[],[]]
@@ -358,13 +364,21 @@ class HiCacheLSM(HiCacheStorage):
         
 
     def batch_set(self, keys: List[str], values: List[torch.Tensor]) -> bool:
-        db_keys = [self._get_suffixed_key(key).encode("utf-8") for key in keys]
-        tensors = [(value[0], value[1]) for value in values]
-        db_values = [
-            self.db_value_tobytes(self.file_count, i) for i in range(len(tensors))
-        ]
+        db_keys = []
+        tensors = []
+        db_values = []
+        value_offset = 0
+        for i, key in enumerate(keys):
+            if self.exists(key):
+                continue
+            db_keys.append(self._get_suffixed_key(key).encode("utf-8"))
+            tensors.append((values[i][0], values[i][1]))
+            db_values.append(self.db_value_tobytes(self.file_count, value_offset))
+            value_offset += 1
+        if len(db_keys) == 0:
+            return True
         self.safetensor_helper.save_kv_caches(
-            self._get_filename(self.file_count), db_values
+            self._get_filename(self.file_count), tensors
         )
         self.file_count += 1
         status = self.db.batch_put(
