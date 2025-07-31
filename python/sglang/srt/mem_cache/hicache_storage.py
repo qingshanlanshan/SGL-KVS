@@ -12,6 +12,10 @@ import time
 import rocksdb_binding as rocksdb
 from sglang.srt.mem_cache.safetensor_helper import SafetensorHelper
 import functools
+import threading
+
+# Thread-local context to track batch nesting
+_batch_context = threading.local()
 
 logger = logging.getLogger(__name__)
 
@@ -38,31 +42,39 @@ def record_stats(op_name, is_batch=False):
         @functools.wraps(func)
         def wrapper(self, *args, **kwargs):
             stats = self.statistics
-            count_attr = f"n_{op_name}s"
-            time_attr = f"t_{op_name}s"
 
-            start = time.perf_counter()
-            result = func(self, *args, **kwargs)
-            duration = time.perf_counter() - start
+            # Avoid double-counting inside batch
+            if not is_batch and getattr(_batch_context, "in_batch", False) and op_name in ["get", "set"]:
+                return func(self, *args, **kwargs)
 
-            # Determine count
+            # If this is a batch, mark the context
             if is_batch:
-                count = len(args[0]) if args else 1  # keys or inputs list
-            else:
-                count = 1
+                _batch_context.in_batch = True
 
-            if hasattr(stats, count_attr):
-                setattr(stats, count_attr, getattr(stats, count_attr) + count)
-            if hasattr(stats, time_attr):
-                setattr(stats, time_attr, getattr(stats, time_attr) + duration)
+            try:
+                count_attr = f"n_{op_name}s"
+                time_attr = f"t_{op_name}s"
+                start = time.perf_counter()
+                result = func(self, *args, **kwargs)
+                duration = time.perf_counter() - start
 
-            if op_name == "exist" and not is_batch and result is True:
-                stats.n_exists_true += 1
+                # Count how many items
+                count = len(args[0]) if is_batch and args else 1
 
-            return result
+                if hasattr(stats, count_attr):
+                    setattr(stats, count_attr, getattr(stats, count_attr) + count)
+                if hasattr(stats, time_attr):
+                    setattr(stats, time_attr, getattr(stats, time_attr) + duration)
+
+                if op_name == "exist" and not is_batch and result is True:
+                    stats.n_exists_true += 1
+
+                return result
+            finally:
+                if is_batch:
+                    _batch_context.in_batch = False
         return wrapper
     return decorator
-
 
 
 class HiCacheStorage(ABC):
@@ -95,9 +107,9 @@ class HiCacheStorage(ABC):
     def __init_subclass__(cls):
         super().__init_subclass__()
         method_map = {
-            # "get": ("get", False),
+            "get": ("get", False),
             "batch_get": ("get", True),
-            # "set": ("set", False),
+            "set": ("set", False),
             "batch_set": ("set", True),
             "exists": ("exist", False),
         }
@@ -252,8 +264,13 @@ class HiCacheFile(HiCacheStorage):
 
 class HiCacheLSM(HiCacheStorage):
     def __init__(self, db_path: str = "db", tensor_filename: str = "tensor"):
-        tp_rank = get_tensor_model_parallel_rank()
-        tp_size = get_tensor_model_parallel_world_size()
+        try:
+            tp_rank = get_tensor_model_parallel_rank()
+            tp_size = get_tensor_model_parallel_world_size()
+        except Exception as e:
+            logger.warning(f"Failed to get tensor model parallel rank/size: {e}. Defaulting to 0 and 1.")
+            tp_rank = 0
+            tp_size = 1
         self.tp_suffix = f"_{tp_rank}_{tp_size}" if tp_size > 1 else ""
         self.db_path = os.getenv("SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR", db_path)
         self.tensor_filename = tensor_filename
@@ -322,30 +339,24 @@ class HiCacheLSM(HiCacheStorage):
         keys: List[str],
         target_locations: Optional[List[torch.Tensor]] = None,
     ) -> List[torch.Tensor | None]:
-        return [
-            self.get(key, target_location)
-            for key, target_location in zip(
-                keys, target_locations or [None] * len(keys)
-            )
-        ]
         db_keys = [self._get_suffixed_key(key).encode("utf-8") for key in keys]
         db_values = self.db.multiget(db_keys)
         
         location_dict = {}
-        for db_key, db_value in db_values.items():
-            offset, idx = self.db_value_frombytes(db_value)
+        for i, (db_key, db_value) in enumerate(db_values.items()):
+            fileno, offset = self.db_value_frombytes(db_value)
             if fileno not in location_dict:
                 location_dict[fileno] = [[],[]]
             location_dict[fileno][0].append(offset)
-            location_dict[fileno][1].append(idx)
+            location_dict[fileno][1].append(i)
             
         results = [None] * len(keys)
-        for fileno, (offsets, idx) in location_dict.items():
+        for fileno, (offsets, idxs) in location_dict.items():
             kv_caches = self.safetensor_helper.load_kv_caches(
                 self._get_filename(fileno), offsets=offsets
             )
             kv_tensors = [torch.stack(kv_cache, dim=0) for kv_cache in kv_caches]
-            for i, idx in enumerate(idx):
+            for i, idx in enumerate(idxs):
                 results[idx] = kv_tensors[i]
         return results
 
@@ -390,3 +401,36 @@ class HiCacheLSM(HiCacheStorage):
     def exists(self, key: str) -> bool:
         key = self._get_suffixed_key(key)
         return self.db.probe(key.encode("utf-8"))
+
+if __name__ == "__main__":
+    import random
+    # Example usage
+    os.system("rm -rf db/*")
+    storage = HiCacheLSM("db")
+    key = "example_key"
+    value = torch.rand(2, 2, dtype=torch.float16)
+    storage.set(key, value)
+    
+
+    keys = [f"key_{i}" for i in range(10)]
+    values = [torch.rand(2, 2, dtype=torch.float16) for _ in range(len(keys))]
+    storage.batch_set(keys, values)
+    
+    retrieved_value = storage.get(key)
+    assert torch.allclose(retrieved_value, value, rtol=1e-1), "single put & get failed"
+    retrieved_values = storage.batch_get(keys)
+    assert all(
+        torch.allclose(retrieved_values[i], values[i], rtol=1e-1)
+        for i in range(len(keys))
+    ), "batch put & get failed"
+    
+    for i in range(10):
+        random_int = random.randint(0, 9)
+        key = f"key_{random_int}"
+        exists = storage.exists(key)
+        assert exists == True, f"exists check failed for {key}"
+        retrieved_value = storage.get(key)
+        assert torch.allclose(retrieved_value, values[random_int], rtol=1e-1), f"get failed for {key}"
+    
+    print(storage.statistics)
+    print("All tests passed!")
