@@ -39,6 +39,6 @@ echo "================== Results ==================="
 echo "SGLang"
 tail -n 1 output.txt
 echo "backend file"
-tail -n 1 test_backend_file.txt
+tail -n 1 output_backend_file.txt
 echo "backend lsm"
-tail -n 1 test_backend_lsm.txt
+tail -n 1 output_backend_lsm.txt
