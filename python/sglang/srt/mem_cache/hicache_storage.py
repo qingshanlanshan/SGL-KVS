@@ -11,6 +11,7 @@ import threading
 import time
 import rocksdb_binding as rocksdb
 from sglang.srt.mem_cache.safetensor_helper import SafetensorHelper
+import functools
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,37 @@ def get_hash_str(token_ids: List[int], prior_hash: Optional[str] = None) -> str:
 
     return hasher.hexdigest()
 
+def record_stats(op_name, is_batch=False):
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(self, *args, **kwargs):
+            stats = self.statistics
+            count_attr = f"n_{op_name}s"
+            time_attr = f"t_{op_name}s"
+
+            start = time.perf_counter()
+            result = func(self, *args, **kwargs)
+            duration = time.perf_counter() - start
+
+            # Determine count
+            if is_batch:
+                count = len(args[0]) if args else 1  # keys or inputs list
+            else:
+                count = 1
+
+            if hasattr(stats, count_attr):
+                setattr(stats, count_attr, getattr(stats, count_attr) + count)
+            if hasattr(stats, time_attr):
+                setattr(stats, time_attr, getattr(stats, time_attr) + duration)
+
+            if op_name == "exist" and not is_batch and result is True:
+                stats.n_exists_true += 1
+
+            return result
+        return wrapper
+    return decorator
+
+
 
 class HiCacheStorage(ABC):
     """
@@ -42,7 +74,50 @@ class HiCacheStorage(ABC):
     # todo, translate tensor object access for different TP ranks
     # potentially pass model and TP configs into storage backend
     # todo, the page size of storage backend does not have to be the same as the same as host memory pool
+    class Statistics:
+        def __init__(self):
+            self.n_gets = 0
+            self.t_gets = 0.0
+            self.n_sets = 0
+            self.t_sets = 0.0
+            self.n_exists = 0
+            self.n_exists_true = 0
+            self.t_exists = 0.0
 
+        def __str__(self):
+            return (
+                f"\n\n[HiCacheStorage] Statistics\n"
+                f"[Gets] Count: {self.n_gets}, Avg Time: {self.t_gets / max(1, self.n_gets):.6f}s\n"
+                f"[Sets] Count: {self.n_sets}, Avg Time: {self.t_sets / max(1, self.n_sets):.6f}s\n"
+                f"[Exists] Count: {self.n_exists}, Avg Time: {self.t_exists / max(1, self.n_exists):.6f}s, Exists True: {self.n_exists_true}\n"
+            )
+
+    def __init_subclass__(cls):
+        super().__init_subclass__()
+        method_map = {
+            "get": ("get", False),
+            "batch_get": ("get", True),
+            "set": ("set", False),
+            "batch_set": ("set", True),
+            "exists": ("exist", False),
+        }
+
+        for method_name, (op_name, is_batch) in method_map.items():
+            orig = getattr(cls, method_name, None)
+            if callable(orig) and not getattr(orig, "_is_wrapped", False):
+                wrapped = record_stats(op_name, is_batch)(orig)
+                wrapped._is_wrapped = True
+                setattr(cls, method_name, wrapped)
+                
+
+    def _start_stats_thread(self, interval: int = 1):
+        def _loop():
+            while True:
+                time.sleep(interval)
+                logger.info(self.statistics.__str__())
+        thread = threading.Thread(target=_loop, daemon=True)
+        thread.start()
+    
     @abstractmethod
     def get(
         self, key: str, target_location: Optional[torch.Tensor] = None
@@ -98,6 +173,8 @@ class HiCacheFile(HiCacheStorage):
         if not os.path.exists(self.file_path) and tp_rank == 0:
             os.makedirs(self.file_path)
             logger.info(f"Created HiCacheFile storage directory at {self.file_path}")
+        self.statistics = HiCacheStorage.Statistics()
+        self._start_stats_thread()
 
     def _get_suffixed_key(self, key: str) -> str:
         return key + self.tp_suffix
@@ -174,35 +251,6 @@ class HiCacheFile(HiCacheStorage):
             logger.error(f"Failed to clear HiCacheFile storage: {e}")
 
 class HiCacheLSM(HiCacheStorage):
-    @dataclass
-    class Statistics:
-        n_gets: int = 0
-        t_gets: float = 0.0
-        n_sets: int = 0
-        t_sets: float = 0.0
-        n_exists: int = 0
-        n_exists_true: int = 0
-        t_exists: float = 0.0
-        
-        def __init__(self):
-            self.print_interval = 1  # Print statistics every 1 second
-            self._stats_thread = threading.Thread(target=self.print_stats, daemon=True)
-            self._stats_thread.start()
-            
-        def print_stats(self):
-            while True:
-                time.sleep(self.print_interval)
-                logger.info(self.__str__())
-        
-        def __str__(self):
-            return (
-                f"\n\n[HiCacheLSM] Statistics:\n"
-                f"[Gets] Count: {self.n_gets}, Avg Time: {self.t_gets / max(1, self.n_gets):.6f}s\n"
-                f"[Sets] Count: {self.n_sets}, Avg Time: {self.t_sets / max(1, self.n_sets):.6f}s\n"
-                f"[Exists] Count: {self.n_exists}, Avg Time: {self.t_exists / max(1, self.n_exists):.6f}s, Exists True: {self.n_exists_true}\n"
-            )
-            
-        
     def __init__(self, db_path: str = "db", tensor_filename: str = "tensor"):
         tp_rank = get_tensor_model_parallel_rank()
         tp_size = get_tensor_model_parallel_world_size()
@@ -217,8 +265,9 @@ class HiCacheLSM(HiCacheStorage):
         assert open_status
         
         self.safetensor_helper = SafetensorHelper(storage_dir = self.db_path)
-        
-        self.statistics = self.Statistics()
+
+        self.statistics = HiCacheStorage.Statistics()
+        self._start_stats_thread()
 
     def _get_filename(self, fileno) -> str:
         return f"{self.tensor_filename}_{fileno}"
@@ -255,12 +304,9 @@ class HiCacheLSM(HiCacheStorage):
     def get(
         self, key: str, target_location: Optional[torch.Tensor] = None
     ) -> torch.Tensor | None:
-        self.statistics.n_gets += 1
-        start_time = time.perf_counter()
         key = self._get_suffixed_key(key)
         db_value = self.db.get(key.encode("utf-8"))
         if db_value is None:
-            self.statistics.t_gets += time.perf_counter() - start_time
             return None
         # byte to int
         fileno, offset = self.db_value_frombytes(db_value)
@@ -268,7 +314,6 @@ class HiCacheLSM(HiCacheStorage):
             self._get_filename(fileno), offsets=[offset]
         )
         kv_tensor = torch.stack(kv_caches[0], dim=0)
-        self.statistics.t_gets += time.perf_counter() - start_time
         return kv_tensor
         
 
@@ -299,8 +344,6 @@ class HiCacheLSM(HiCacheStorage):
         return results
 
     def set(self, key: str, value: torch.Tensor) -> bool:
-        self.statistics.n_sets += 1
-        start_time = time.perf_counter()
         if self.exists(key):
             logger.debug(f"Key {key} already exists. Skipped.")
             return True
@@ -311,13 +354,10 @@ class HiCacheLSM(HiCacheStorage):
             self.db_value_tobytes(self.file_count, 0)
         )
         self.file_count += 1
-        self.statistics.t_sets += time.perf_counter() - start_time
         return status
         
 
     def batch_set(self, keys: List[str], values: List[torch.Tensor]) -> bool:
-        self.statistics.n_sets += len(keys)
-        start_time = time.perf_counter()
         db_keys = [self._get_suffixed_key(key).encode("utf-8") for key in keys]
         tensors = [(value[0], value[1]) for value in values]
         db_values = [
@@ -326,20 +366,13 @@ class HiCacheLSM(HiCacheStorage):
         self.safetensor_helper.save_kv_caches(
             self._get_filename(self.file_count), db_values
         )
-        status = self.db.batch_put_original(
+        self.file_count += 1
+        status = self.db.batch_put(
             db_keys, db_values
         )
-        self.file_count += 1
-        self.statistics.t_sets += time.perf_counter() - start_time
         return status
 
 
     def exists(self, key: str) -> bool:
-        self.statistics.n_exists += 1
-        start_time = time.perf_counter()
         key = self._get_suffixed_key(key)
-        exists = self.db.probe(key.encode("utf-8"))
-        if exists:
-            self.statistics.n_exists_true += 1
-        self.statistics.t_exists += time.perf_counter() - start_time
-        return exists
+        return self.db.probe(key.encode("utf-8"))

@@ -5,6 +5,7 @@ prompt_token_num=1024
 # maximum number of new tokens to generate
 max_new_tokens=1
 
+export SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR="file_storage"
 rm -rf db
 rm -rf file_storage
 
