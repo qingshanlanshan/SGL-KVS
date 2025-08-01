@@ -5,10 +5,9 @@ prompt_token_num=1024
 # maximum number of new tokens to generate
 max_new_tokens=1
 # hicache storage location
-hicache_storage_dir=/mnt/newssd4t/DB
+hicache_storage_dir=db
 
 export SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR=$hicache_storage_dir
-rm -rf "$hicache_storage_dir/*"
 
 # origin sglang
 python test.py --num-requests $num_requests \
@@ -17,6 +16,7 @@ python test.py --num-requests $num_requests \
     --output-file output.txt \
     |& tee test.log
 
+rm -rf "$hicache_storage_dir"
 python test.py --num-requests $num_requests \
     --prompt-token-num $prompt_token_num \
     --max-new-tokens $max_new_tokens \
@@ -24,6 +24,7 @@ python test.py --num-requests $num_requests \
     --hicache-storage-backend file \
     |& tee test_backend_file.log
 
+rm -rf "$hicache_storage_dir"
 python test.py --num-requests $num_requests \
     --prompt-token-num $prompt_token_num \
     --max-new-tokens $max_new_tokens \

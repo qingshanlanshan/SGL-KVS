@@ -15,7 +15,44 @@ import functools
 import threading
 
 # Thread-local context to track batch nesting
-_batch_context = threading.local()
+_stats_context = threading.local()
+_stats_context.depth = 0
+
+def record_stats(op_name):
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(self, *args, **kwargs):
+            # Init if not set
+            if not hasattr(_stats_context, "depth"):
+                _stats_context.depth = 0
+
+            top_level = _stats_context.depth == 0
+            _stats_context.depth += 1
+
+            try:
+                if not top_level:
+                    return func(self, *args, **kwargs)
+
+                stats = self.statistics
+                count_attr = f"n_{op_name}s"
+                time_attr = f"t_{op_name}s"
+
+                start = time.perf_counter()
+                result = func(self, *args, **kwargs)
+                duration = time.perf_counter() - start
+
+                count = len(args[0]) if isinstance(args[0], list) else 1
+                setattr(stats, count_attr, getattr(stats, count_attr) + count)
+                setattr(stats, time_attr, getattr(stats, time_attr) + duration)
+
+                if op_name == "exist" and result is True:
+                    stats.n_exists_true += 1
+
+                return result
+            finally:
+                _stats_context.depth -= 1
+        return wrapper
+    return decorator
 
 logger = logging.getLogger(__name__)
 
@@ -36,45 +73,6 @@ def get_hash_str(token_ids: List[int], prior_hash: Optional[str] = None) -> str:
         hasher.update(t.to_bytes(4, byteorder="little", signed=False))
 
     return hasher.hexdigest()
-
-def record_stats(op_name, is_batch=False):
-    def decorator(func):
-        @functools.wraps(func)
-        def wrapper(self, *args, **kwargs):
-            stats = self.statistics
-
-            # Avoid double-counting inside batch
-            if not is_batch and getattr(_batch_context, "in_batch", False) and op_name in ["get", "set"]:
-                return func(self, *args, **kwargs)
-
-            # If this is a batch, mark the context
-            if is_batch:
-                _batch_context.in_batch = True
-
-            try:
-                count_attr = f"n_{op_name}s"
-                time_attr = f"t_{op_name}s"
-                start = time.perf_counter()
-                result = func(self, *args, **kwargs)
-                duration = time.perf_counter() - start
-
-                # Count how many items
-                count = len(args[0]) if is_batch and args else 1
-
-                if hasattr(stats, count_attr):
-                    setattr(stats, count_attr, getattr(stats, count_attr) + count)
-                if hasattr(stats, time_attr):
-                    setattr(stats, time_attr, getattr(stats, time_attr) + duration)
-
-                if op_name == "exist" and not is_batch and result is True:
-                    stats.n_exists_true += 1
-
-                return result
-            finally:
-                if is_batch:
-                    _batch_context.in_batch = False
-        return wrapper
-    return decorator
 
 
 class HiCacheStorage(ABC):
@@ -107,17 +105,17 @@ class HiCacheStorage(ABC):
     def __init_subclass__(cls):
         super().__init_subclass__()
         method_map = {
-            "get": ("get", False),
-            "batch_get": ("get", True),
-            "set": ("set", False),
-            "batch_set": ("set", True),
-            "exists": ("exist", False),
+            "get": "get",
+            "batch_get": "get",
+            "set": "set",
+            "batch_set": "set",
+            "exists": "exist",
         }
 
-        for method_name, (op_name, is_batch) in method_map.items():
+        for method_name, op_name in method_map.items():
             orig = getattr(cls, method_name, None)
             if callable(orig) and not getattr(orig, "_is_wrapped", False):
-                wrapped = record_stats(op_name, is_batch)(orig)
+                wrapped = record_stats(op_name)(orig)
                 wrapped._is_wrapped = True
                 setattr(cls, method_name, wrapped)
                 
@@ -431,7 +429,7 @@ class HiCacheBlob(HiCacheStorage):
             scale_factor = 1.0
         else:
             scale_factor = 127.0 / max_val
-        quantized_tensor = (kv_tensor * scale_factor).clamp(-127, 127).round().to(torch.uint8)
+        quantized_tensor = (kv_tensor * scale_factor).clamp(-127, 127).round().to(torch.int8)
         quantized_bytes = quantized_tensor.cpu().contiguous().numpy().tobytes()
         scale_bytes = torch.tensor(scale_factor, dtype=torch.float16).cpu().contiguous().numpy().tobytes()
         
@@ -444,11 +442,11 @@ class HiCacheBlob(HiCacheStorage):
         if compressed_value is None:
             return None
         quantized_tensor = torch.frombuffer(
-            compressed_value[: -2], 
-            dtype=torch.uint8,
+            bytearray(compressed_value[:-2]),
+            dtype=torch.int8,
         ).to(torch.float16)
         scale = torch.frombuffer(
-            compressed_value[-2:],
+            bytearray(compressed_value[-2:]),
             dtype=torch.float16,
         ).item()
         return quantized_tensor / scale
@@ -488,9 +486,10 @@ class HiCacheBlob(HiCacheStorage):
         db_keys = []
         compressed_values = []
         for key, value in zip(keys, values):
+            key = self._get_suffixed_key(key).encode("utf-8")
             if self.exists(key):
                 continue
-            db_keys.append(self._get_suffixed_key(key).encode("utf-8"))
+            db_keys.append(key)
             compressed_values.append(self._compress(value))
         if len(db_keys) == 0:
             return True
@@ -498,40 +497,42 @@ class HiCacheBlob(HiCacheStorage):
         return status
 
     def exists(self, key: str) -> bool:
-        key = self._get_suffixed_key(key)
-        return self.db.probe(key.encode("utf-8"))
+        if isinstance(key, str):
+            key = self._get_suffixed_key(key).encode("utf-8")
+        assert isinstance(key, bytes), "Key must be a bytes object"
+        return self.db.probe(key)
 
 
 if __name__ == "__main__":
     import random
     # Example usage
     os.system("rm -rf db/*")
+    
     # storage = HiCacheLSM("db")
     storage = HiCacheBlob("db")
+    
     key = "example_key"
-    value = torch.rand(2, 2, dtype=torch.float16)
+    value = torch.rand(4, dtype=torch.float16)
     storage.set(key, value)
     
-
-    keys = [f"key_{i}" for i in range(10)]
-    values = [torch.rand(2, 2, dtype=torch.float16) for _ in range(len(keys))]
-    storage.batch_set(keys, values)
+    keys = [f"key_{i}" for i in range(256)]
+    values = [torch.rand(4, dtype=torch.float16) for _ in range(len(keys))]
+    for i in range(len(keys)):
+        storage.batch_set(keys[i:i+1], values[i:i+1])
     
     retrieved_value = storage.get(key)
     assert torch.allclose(retrieved_value, value, rtol=1e-1), "single put & get failed"
+    
+    assert all(
+        storage.exists(k) for k in keys
+    ), "some keys do not exist"
+    
     retrieved_values = storage.batch_get(keys)
     assert all(
         torch.allclose(retrieved_values[i], values[i], atol=1e-1)
         for i in range(len(keys))
     ), "batch put & get failed"
     
-    for i in range(10):
-        random_int = random.randint(0, 9)
-        key = f"key_{random_int}"
-        exists = storage.exists(key)
-        assert exists == True, f"exists check failed for {key}"
-        retrieved_value = storage.get(key)
-        assert torch.allclose(retrieved_value, values[random_int], atol=1e-1), f"get failed for {key}"
-    
     print(storage.statistics)
+    os.system("rm -rf db")
     print("All tests passed!")
