@@ -16,7 +16,7 @@ import sglang as sgl
 from sglang.lang.backend.runtime_endpoint import RuntimeEndpoint
 
 
-def start_server(enable_hierarchical_cache:bool = False, hicache_storage_backend:str = None):
+def start_server(hicache_storage_backend:str = None):
     command = f"""
     python3 -m sglang.launch_server \
     --model-path meta-llama/Llama-3.1-8B \
@@ -25,7 +25,6 @@ def start_server(enable_hierarchical_cache:bool = False, hicache_storage_backend
     --dtype float16 \
     --enable-hierarchical-cache \
     --hicache-ratio 1.5 \
-    --hicache-write-policy write_through \
     {"--hicache-storage-backend " + hicache_storage_backend if hicache_storage_backend else ""} \
     """
 
@@ -128,14 +127,15 @@ def chunk_prompt_generator(chunk_pool, chunk_per_prompt):
 
 def gen_arguments(num_requests, tokenizer, prompt_len=0, new_tokens=32, turns=1):
     multi_qas = [{"qas": []} for _ in range(num_requests)]
-    pool = build_chunk_pool(tokenizer, 128, 4)
+    chunk_size = 128
+    pool = build_chunk_pool(tokenizer, chunk_size, 4)
     for i in range(num_requests):
         qas = multi_qas[i]["qas"]
         for _ in range(turns):
             qas.append(
                 {
                     # "prompt": random_prompt(tokenizer, prompt_len) if prompt_len > 0 else tempelate_prompt(),
-                    "prompt": chunk_prompt_generator(pool, prompt_len // 128) if prompt_len > 0 else tempelate_prompt(),
+                    "prompt": chunk_prompt_generator(pool, prompt_len // chunk_size) if prompt_len > 0 else tempelate_prompt(),
                     "new_tokens": new_tokens,
                 }
             )
@@ -143,12 +143,6 @@ def gen_arguments(num_requests, tokenizer, prompt_len=0, new_tokens=32, turns=1)
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--enable-hierarchical-cache",
-        action="store_true",
-        default=False,
-        help="Enable hierarchical cache for the server",
-    )
     parser.add_argument(
         "--num-requests",
         type=int,
@@ -214,10 +208,9 @@ if __name__ == "__main__":
     torch.manual_seed(42)  # For reproducibility
     args = parse_args()
 
-    enable_hierarchical_cache = args.enable_hierarchical_cache
     output_file = args.output_file
 
-    server_process, port = start_server(enable_hierarchical_cache, args.hicache_storage_backend)
+    server_process, port = start_server(args.hicache_storage_backend)
     tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
 
     
@@ -225,12 +218,13 @@ if __name__ == "__main__":
                                 prompt_len=args.prompt_token_num,
                                 new_tokens=args.max_new_tokens,
                                 turns=args.turns)
-
+    
+    generate(random_prompt(tokenizer, 0))  # ensure the server is ready
     start = time.time()
     response_list = list(generate_batch(multi_qas))
     end = time.time()
 
-    print_highlight(f"== Run {args.num_requests} turns of chat with {enable_hierarchical_cache=} ==")
+    print_highlight(f"== Run {args.num_requests} turns of chat with hicache storage backend {args.hicache_storage_backend} ==")
     print_highlight(f"== Total time taken: {end - start:.2f} seconds ==")
     print_highlight(f"== Average time per request: {(end - start) / args.num_requests:.2f} seconds ==")
     

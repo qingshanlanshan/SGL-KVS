@@ -272,8 +272,8 @@ class HiCacheController:
                     rank, bytes_per_page, dtype
                 )
             elif storage_backend == "lsm":
-                # self.storage_backend = HiCacheLSM()
-                self.storage_backend = HiCacheBlob()
+                self.storage_backend = HiCacheLSM()
+                # self.storage_backend = HiCacheBlob()
             else:
                 raise NotImplementedError(
                     f"Unsupported storage backend: {storage_backend}"
@@ -653,7 +653,7 @@ class HiCacheController:
                 operation = self.backup_queue.get(block=True, timeout=1)
                 if operation is None:
                     continue
-
+                logger.info(f"Backup queue length: {self.backup_queue.qsize()}")
                 last_hash = operation.last_hash
                 tokens_to_backup = operation.token_ids
 

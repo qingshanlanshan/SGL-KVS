@@ -319,8 +319,8 @@ class HiCacheLSM(HiCacheStorage):
     def get(
         self, key: str, target_location: Optional[torch.Tensor] = None
     ) -> torch.Tensor | None:
-        key = self._get_suffixed_key(key)
-        db_value = self.db.get(key.encode("utf-8"))
+        key = self._get_suffixed_key(key).encode("utf-8")
+        db_value = self.db.get(key)
         if db_value is None:
             return None
         # byte to int
@@ -328,8 +328,7 @@ class HiCacheLSM(HiCacheStorage):
         kv_caches = self.safetensor_helper.load_kv_caches(
             self._get_filename(fileno), offsets=[offset]
         )
-        kv_tensor = torch.stack(kv_caches[0], dim=0)
-        return kv_tensor
+        return kv_caches[0]
         
 
     def batch_get(
@@ -353,19 +352,18 @@ class HiCacheLSM(HiCacheStorage):
             kv_caches = self.safetensor_helper.load_kv_caches(
                 self._get_filename(fileno), offsets=offsets
             )
-            kv_tensors = [torch.stack(kv_cache, dim=0) for kv_cache in kv_caches]
             for i, idx in enumerate(idxs):
-                results[idx] = kv_tensors[i]
+                results[idx] = kv_caches[i]
         return results
 
     def set(self, key: str, value: torch.Tensor) -> bool:
+        key = self._get_suffixed_key(key).encode("utf-8")
         if self.exists(key):
             logger.debug(f"Key {key} already exists. Skipped.")
             return True
-        key = self._get_suffixed_key(key)
-        self.safetensor_helper.save_kv_caches(self._get_filename(self.file_count), [(value[0], value[1])])
+        self.safetensor_helper.save_kv_caches(self._get_filename(self.file_count), [value])
         status = self.db.put(
-            key.encode("utf-8"), 
+            key, 
             self.db_value_tobytes(self.file_count, 0)
         )
         self.file_count += 1
@@ -378,10 +376,11 @@ class HiCacheLSM(HiCacheStorage):
         db_values = []
         value_offset = 0
         for i, key in enumerate(keys):
+            key = self._get_suffixed_key(key).encode("utf-8")
             if self.exists(key):
                 continue
-            db_keys.append(self._get_suffixed_key(key).encode("utf-8"))
-            tensors.append((values[i][0], values[i][1]))
+            db_keys.append(key)
+            tensors.append(values[i])
             db_values.append(self.db_value_tobytes(self.file_count, value_offset))
             value_offset += 1
         if len(db_keys) == 0:
@@ -397,8 +396,10 @@ class HiCacheLSM(HiCacheStorage):
 
 
     def exists(self, key: str) -> bool:
-        key = self._get_suffixed_key(key)
-        return self.db.probe(key.encode("utf-8"))
+        if isinstance(key, str):
+            key = self._get_suffixed_key(key).encode("utf-8")
+        assert isinstance(key, bytes), "Key must be a bytes object"
+        return self.db.probe(key)
 
 class HiCacheBlob(HiCacheStorage):
     def __init__(self, db_path: str = "db", tensor_filename: str = "tensor"):
@@ -508,8 +509,8 @@ if __name__ == "__main__":
     # Example usage
     os.system("rm -rf db/*")
     
-    # storage = HiCacheLSM("db")
-    storage = HiCacheBlob("db")
+    storage = HiCacheLSM("db")
+    # storage = HiCacheBlob("db")
     
     key = "example_key"
     value = torch.rand(4, dtype=torch.float16)
