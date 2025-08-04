@@ -237,7 +237,7 @@ class HiCacheController:
         # todo: move backend initialization to storage backend module
         if storage_backend is not None:
             self.storage_backend_type = storage_backend
-            from sglang.srt.mem_cache.hicache_storage import HiCacheFile, get_hash_str, HiCacheLSM, HiCacheBlob
+            from sglang.srt.mem_cache.hicache_storage import HiCacheFile, get_hash_str
 
             if storage_backend == "file":
                 self.storage_backend = HiCacheFile()
@@ -272,8 +272,10 @@ class HiCacheController:
                 )
                 self.get_hash_str = get_hash_str
             elif storage_backend == "lsm":
+                from sglang.srt.mem_cache.lsm.lsm_store import HiCacheLSM, HiCacheBlob
                 self.storage_backend = HiCacheLSM()
                 # self.storage_backend = HiCacheBlob()
+                self.get_hash_str = get_hash_str
             else:
                 raise NotImplementedError(
                     f"Unsupported storage backend: {storage_backend}"
