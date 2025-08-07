@@ -1,5 +1,6 @@
 import heapq
 import logging
+import os
 import threading
 import time
 from typing import List, Optional
@@ -94,15 +95,16 @@ class HiRadixCache(RadixCache):
         self.ongoing_backup = {}
         # todo: dynamically adjust the threshold
         self.write_through_threshold = (
-            1 if hicache_write_policy == "write_through" else  1
+            1 if hicache_write_policy == "write_through" else  3
         )
         self.write_through_threshold_storage = (
-            1 if hicache_write_policy == "write_through" else 1
+            1 if hicache_write_policy == "write_through" else 3
         )
         self.load_back_threshold = 10
         super().__init__(
             req_to_token_pool, token_to_kv_pool_allocator, page_size, disable=False
         )
+        self.disable_hash = os.getenv("SGLANG_HICACHE_FILE_BACKEND_STORAGE_DISABLE_HASH", "0") == "1"
 
     def reset(self):
         TreeNode.counter = 0
@@ -142,7 +144,10 @@ class HiRadixCache(RadixCache):
 
     def write_backup_storage(self, node: TreeNode):
         operation_id = self.cache_controller.write_storage(
-            node.host_value, node.key, node.parent.get_last_hash_value()
+            node.host_value,
+            node.key, 
+            node.parent.get_last_hash_value(),
+            node if self.disable_hash else None,
         )
         self.ongoing_backup[operation_id] = node
         node.protect_host()
@@ -523,7 +528,11 @@ class HiRadixCache(RadixCache):
             # no sufficient host memory to prefetch
             return
         operation = self.cache_controller.prefetch(
-            req_id, host_indices, new_input_tokens, last_hash
+            req_id, 
+            host_indices, 
+            new_input_tokens, 
+            last_hash,
+            last_host_node if self.disable_hash else None
         )
         self.ongoing_prefetch[req_id] = (
             last_host_node,

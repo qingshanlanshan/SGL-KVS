@@ -8,6 +8,7 @@ max_new_tokens=1
 hicache_storage_dir=db
 
 export SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR=$hicache_storage_dir
+export SGLANG_HICACHE_FILE_BACKEND_STORAGE_DISABLE_HASH=0
 
 # origin sglang
 python test.py --num-requests $num_requests \
@@ -24,6 +25,7 @@ python test.py --num-requests $num_requests \
     --hicache-storage-backend file \
     |& tee test_backend_file.log
 
+export SGLANG_HICACHE_FILE_BACKEND_STORAGE_DISABLE_HASH=1
 rm -rf "$hicache_storage_dir"
 python test.py --num-requests $num_requests \
     --prompt-token-num $prompt_token_num \
