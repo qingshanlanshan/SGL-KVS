@@ -8,15 +8,17 @@ max_new_tokens=1
 hicache_storage_dir=db
 
 export SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR=$hicache_storage_dir
-export SGLANG_HICACHE_FILE_BACKEND_STORAGE_DISABLE_HASH=0
+
 
 # origin sglang
+export SGLANG_HICACHE_FILE_BACKEND_STORAGE_DISABLE_HASH=0
 python test.py --num-requests $num_requests \
     --prompt-token-num $prompt_token_num \
     --max-new-tokens $max_new_tokens \
     --output-file output.txt \
     |& tee test.log
 
+export SGLANG_HICACHE_FILE_BACKEND_STORAGE_DISABLE_HASH=0
 rm -rf "$hicache_storage_dir"
 python test.py --num-requests $num_requests \
     --prompt-token-num $prompt_token_num \
@@ -34,6 +36,15 @@ python test.py --num-requests $num_requests \
     --hicache-storage-backend lsm \
     |& tee test_backend_lsm.log
 
+export SGLANG_HICACHE_FILE_BACKEND_STORAGE_DISABLE_HASH=1
+rm -rf "$hicache_storage_dir"
+python test.py --num-requests $num_requests \
+    --prompt-token-num $prompt_token_num \
+    --max-new-tokens $max_new_tokens \
+    --output-file output_backend_blob.txt \
+    --hicache-storage-backend blob \
+    |& tee test_backend_blob.log
+
 echo "=================== Settings ==================="
 echo num_requests=$num_requests
 echo prompt_token_num=$prompt_token_num
@@ -45,3 +56,5 @@ echo "backend file"
 tail -n 1 output_backend_file.txt
 echo "backend lsm"
 tail -n 1 output_backend_lsm.txt
+echo "backend blob"
+tail -n 1 output_backend_blob.txt

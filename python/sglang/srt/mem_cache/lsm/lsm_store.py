@@ -41,6 +41,12 @@ class HiCacheLSM(HiCacheStorage):
         return f"{self.tensor_filename}_{fileno}"
 
     def _get_suffixed_key(self, key: str) -> str:
+        if isinstance(key, str):
+            return (key + self.tp_suffix).encode("utf-8")
+        elif isinstance(key, bytes):
+            return key + self.tp_suffix.encode("utf-8")
+        else:
+            raise TypeError(f"Key must be str or bytes, got {type(key)}")
         return key + self.tp_suffix
 
     def _int_tobytes(self, key: List[int] | int) -> bytes:
@@ -75,7 +81,7 @@ class HiCacheLSM(HiCacheStorage):
         target_location: torch.Tensor,
         target_sizes: Optional[Any] = None,
     ) -> torch.Tensor | None:
-        key = self._get_suffixed_key(key).encode("utf-8")
+        key = self._get_suffixed_key(key)
         db_value = self.db.get(key)
         if db_value is None:
             return None
@@ -98,7 +104,7 @@ class HiCacheLSM(HiCacheStorage):
         target_locations: List[torch.Tensor],
         target_sizes: Optional[Any] = None,
     ) -> List[torch.Tensor | None]:
-        db_keys = [self._get_suffixed_key(key).encode("utf-8") for key in keys]
+        db_keys = [self._get_suffixed_key(key) for key in keys]
         db_values = self.db.multiget(db_keys)
 
         location_dict: dict[int, list[list[int]]] = {}
@@ -130,7 +136,7 @@ class HiCacheLSM(HiCacheStorage):
         target_location: Optional[Any] = None,
         target_sizes: Optional[Any] = None,
     ) -> bool:
-        key = self._get_suffixed_key(key).encode("utf-8")
+        key = self._get_suffixed_key(key)
         if self.exists(key):
             logger.debug(f"Key {key} already exists. Skipped.")
             return True
@@ -155,7 +161,7 @@ class HiCacheLSM(HiCacheStorage):
         db_values = []
         value_offset = 0
         for i, key in enumerate(keys):
-            key = self._get_suffixed_key(key).encode("utf-8")
+            key = self._get_suffixed_key(key)
             if self.exists(key):
                 continue
             db_keys.append(key)
@@ -176,7 +182,7 @@ class HiCacheLSM(HiCacheStorage):
 
     def exists(self, key: str) -> bool:
         if isinstance(key, str):
-            key = self._get_suffixed_key(key).encode("utf-8")
+            key = self._get_suffixed_key(key)
         assert isinstance(key, bytes), "Key must be a bytes object"
         return self.db.probe(key)
 
@@ -232,7 +238,12 @@ class HiCacheBlob(HiCacheStorage):
         return quantized_tensor / scale
 
     def _get_suffixed_key(self, key: str) -> str:
-        return key + self.tp_suffix
+        if isinstance(key, str):
+            return (key + self.tp_suffix).encode("utf-8")
+        elif isinstance(key, bytes):
+            return key + self.tp_suffix.encode("utf-8")
+        else:
+            raise TypeError(f"Key must be str or bytes, got {type(key)}")
     
     def get(
         self,
@@ -240,7 +251,7 @@ class HiCacheBlob(HiCacheStorage):
         target_location: torch.Tensor,
         target_sizes: Optional[Any] = None,
     ) -> torch.Tensor | None:
-        key = self._get_suffixed_key(key).encode("utf-8")
+        key = self._get_suffixed_key(key)
         compressed_value = self.db.get(key)
         if compressed_value is None:
             return None
@@ -258,7 +269,7 @@ class HiCacheBlob(HiCacheStorage):
         target_locations: List[torch.Tensor],
         target_sizes: Optional[Any] = None,
     ) -> List[torch.Tensor | None]:
-        db_keys = [self._get_suffixed_key(key).encode("utf-8") for key in keys]
+        db_keys = [self._get_suffixed_key(key) for key in keys]
         result_dict = self.db.multiget(db_keys)
         
         results = [None] * len(keys)
@@ -280,7 +291,7 @@ class HiCacheBlob(HiCacheStorage):
         target_location: Optional[Any] = None,
         target_sizes: Optional[Any] = None,
     ) -> bool:
-        key = self._get_suffixed_key(key).encode("utf-8")
+        key = self._get_suffixed_key(key)
         if self.exists(key):
             return True
         compressed_value = self._compress(value)
@@ -297,7 +308,7 @@ class HiCacheBlob(HiCacheStorage):
         db_keys = []
         compressed_values = []
         for key, value in zip(keys, values):
-            key = self._get_suffixed_key(key).encode("utf-8")
+            key = self._get_suffixed_key(key)
             if self.exists(key):
                 continue
             db_keys.append(key)
@@ -309,7 +320,7 @@ class HiCacheBlob(HiCacheStorage):
 
     def exists(self, key: str) -> bool:
         if isinstance(key, str):
-            key = self._get_suffixed_key(key).encode("utf-8")
+            key = self._get_suffixed_key(key)
         assert isinstance(key, bytes), "Key must be a bytes object"
         return self.db.probe(key)
 

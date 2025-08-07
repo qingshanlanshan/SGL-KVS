@@ -30,6 +30,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+def tokens_to_bytes(tokens: List[int]) -> bytes:
+    token_bytes = [x.to_bytes(4) for x in tokens]
+    return b"".join(token_bytes)
 
 class LayerDoneCounter:
     def __init__(self, num_layers):
@@ -170,7 +173,7 @@ class StorageOperation:
         host_indices: torch.Tensor,
         token_ids: List[int],
         last_hash: Optional[str] = None,
-        node: TreeNode = None
+        node: TreeNode = None,
     ):
         self.host_indices = host_indices
         self.token_ids = token_ids
@@ -178,6 +181,7 @@ class StorageOperation:
         self.completed_tokens = 0
         self.hash_value = []
         self.node = node
+        self.storage_keys = []
 
         self.id = StorageOperation.counter
         StorageOperation.counter += 1
@@ -196,7 +200,6 @@ class PrefetchOperation(StorageOperation):
         last_host_node: Optional[TreeNode] = None,
     ):
         self.request_id = request_id
-        self.storage_keys = []
 
         self._done_flag = False
         self._lock = threading.Lock()
@@ -664,7 +667,11 @@ class HiCacheController:
                 last_hash = operation.last_hash
                 tokens_to_fetch = operation.token_ids
                 last_host_node = operation.node
-                parent_key = self.get_node_key(last_host_node) if last_host_node is not None else None
+                last_storage_key = None
+                if last_host_node is not None:
+                    # get the parent key for the node, if available
+                    parent_key = self.get_node_key(last_host_node.parent)
+                    last_storage_key = tokens_to_bytes(parent_key)
 
                 storage_hit_count = 0
                 remaining_tokens = len(tokens_to_fetch)
@@ -679,9 +686,13 @@ class HiCacheController:
 
                     # todo, more unified interface
                     if not self.is_mooncake_backend():
-                        storage_key = last_hash
-                        if parent_key is not None:
-                            storage_key = parent_key + tokens_to_fetch[:storage_hit_count + self.page_size]
+                        if last_storage_key is None:
+                            storage_key = last_hash
+                        else:
+                            new_key = tokens_to_fetch[
+                                storage_hit_count : storage_hit_count + self.page_size
+                            ]
+                            storage_key = last_storage_key + tokens_to_bytes(new_key)
                         if not self.storage_backend.exists(storage_key):
                             break
                         else:
@@ -778,8 +789,7 @@ class HiCacheController:
             )
             for j in range(len(page_hashes))
         ]
-        parent_key = self.get_node_key(operation.node)
-        storage_keys = [parent_key + operation.token_ids[:self.page_size * i] for i in range(1, len(page_hashes) + 1)]
+        storage_keys = operation.storage_keys
         success = self.storage_backend.batch_set(storage_keys, page_data)
         if not success:
             logger.warning(f"Failed to write page {storage_keys} to storage.")
@@ -823,6 +833,12 @@ class HiCacheController:
                 logger.info(f"Backup queue length: {self.backup_queue.qsize()}")
                 last_hash = operation.last_hash
                 tokens_to_backup = operation.token_ids
+                node = operation.node
+                storage_key = None
+                if node is not None:
+                    # get the parent key for the node, if available
+                    parent_key = self.get_node_key(node.parent)
+                    storage_key = tokens_to_bytes(parent_key)
 
                 backup_hit_count = 0
                 remaining_tokens = len(tokens_to_backup)
@@ -834,6 +850,13 @@ class HiCacheController:
                         ],
                         last_hash,
                     )
+                    if storage_key:
+                        new_key = tokens_to_backup[
+                            backup_hit_count : backup_hit_count + self.page_size
+                        ]
+                        storage_key = storage_key + tokens_to_bytes(new_key)
+                        
+                        operation.storage_keys.append(storage_key)
                     backup_hit_count += self.page_size
                     hash_value.append(last_hash)
                     remaining_tokens -= self.page_size
