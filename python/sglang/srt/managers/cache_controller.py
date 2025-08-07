@@ -545,6 +545,7 @@ class HiCacheController:
         return operation.completed_tokens, operation.hash_value
 
     def generic_page_transfer(self, operation, batch_size=8):
+        batch_size = len(operation.hash_value)
         for i in range(0, len(operation.hash_value), batch_size):
             page_hashes = operation.hash_value[i : i + batch_size]
             # todo: zero copy
@@ -685,6 +686,7 @@ class HiCacheController:
         return operation.id
 
     def generic_page_backup(self, operation, batch_size=8):
+        batch_size = len(operation.hash_value)
         for i in range(0, len(operation.hash_value), batch_size):
             page_hashes = operation.hash_value[i : i + batch_size]
             page_data = [
