@@ -296,6 +296,7 @@ class HiCacheController:
             if self.disable_hash:
                 assert self.is_lsm_backend(), "Hash disabling is only supported for LSM and Blob storage backends."
                 self.get_hash_str = lambda x, y: "1"
+                print(f"[HiCacheController] Disabling hash for HiCache storage backend {self.storage_backend_type}.")
             self.enable_storage = True
             # todo: threshold policy for prefetching
             self.prefetch_threshold = max(prefetch_threshold, self.page_size)
@@ -592,19 +593,19 @@ class HiCacheController:
                 break
 
     def node_page_transfer(self, operation: PrefetchOperation):
-        assert self.is_lsm_backend(), "Node page transfer is only supported for LSM and Blob storage backends."
+        assert self.disable_hash and self.is_lsm_backend(), "Node page transfer is only supported for LSM and Blob storage backends with hash disabled."
+        assert operation.node is not None, "Node must be set for node page transfer."
+        assert operation.storage_keys, "Storage keys must be set for node page transfer."
         
         page_hashes = operation.hash_value
-        storage_keys = operation.storage_keys
-        assert storage_keys, "Storage keys must be set for node page transfer."
         # todo: zero copy
         dummy_page_dst = [self.mem_pool_host.get_dummy_flat_data_page()] * len(
             page_hashes
         )
-        page_data = self.storage_backend.batch_get(storage_keys, dummy_page_dst)
+        page_data = self.storage_backend.batch_get(operation.storage_keys, dummy_page_dst)
         if page_data is None:
             logger.warning(
-                f"Prefetch operation {operation.request_id} failed to retrieve page {storage_keys}."
+                f"Prefetch operation {operation.request_id} failed to retrieve page {operation.storage_keys}."
             )
             return
         completed_tokens = operation.completed_tokens
@@ -641,10 +642,10 @@ class HiCacheController:
         while not self.stop_event.is_set():
             try:
                 operation: PrefetchOperation = self.prefetch_buffer.get(block=True, timeout=1)
+                logger.info(f"[HiCacheController] Prefetch buffer length: {self.prefetch_buffer.qsize()}")
                 if self.is_mooncake_backend():
                     self.mooncake_page_transfer(operation)
-                elif self.is_lsm_backend() and operation.storage_keys is not None:
-                    assert operation.node is not None
+                elif self.disable_hash and self.is_lsm_backend():
                     self.node_page_transfer(operation)
                 else:
                     self.generic_page_transfer(operation)
@@ -667,11 +668,12 @@ class HiCacheController:
                 last_hash = operation.last_hash
                 tokens_to_fetch = operation.token_ids
                 last_host_node = operation.node
-                last_storage_key = None
-                if last_host_node is not None:
+                storage_key = None
+                if self.disable_hash:
+                    assert last_host_node is not None, "Last host node must be set when hash is disabled."
                     # get the parent key for the node, if available
                     parent_key = self.get_node_key(last_host_node.parent)
-                    last_storage_key = tokens_to_bytes(parent_key)
+                    storage_key = tokens_to_bytes(parent_key)
 
                 storage_hit_count = 0
                 remaining_tokens = len(tokens_to_fetch)
@@ -686,17 +688,17 @@ class HiCacheController:
 
                     # todo, more unified interface
                     if not self.is_mooncake_backend():
-                        if last_storage_key is None:
+                        if not self.disable_hash:
                             storage_key = last_hash
                         else:
                             new_key = tokens_to_fetch[
                                 storage_hit_count : storage_hit_count + self.page_size
                             ]
-                            storage_key = last_storage_key + tokens_to_bytes(new_key)
+                            storage_key = storage_key + tokens_to_bytes(new_key)
                         if not self.storage_backend.exists(storage_key):
                             break
-                        else:
-                            operation.storage_keys.append(storage_key)
+                        elif self.disable_hash:
+                            operation.storage_keys.append(storage_key)                    
                     hash_value.append(last_hash)
                     storage_hit_count += self.page_size
                     remaining_tokens -= self.page_size
@@ -781,7 +783,9 @@ class HiCacheController:
         return keys
 
     def node_page_backup(self, operation: StorageOperation):
-
+        assert self.disable_hash and self.is_lsm_backend(), "Node page backup is only supported for LSM and Blob storage backends with hash disabled."
+        assert operation.node is not None, "Node must be set for node page backup."
+        assert operation.storage_keys, "Storage keys must be set for node page backup."
         page_hashes = operation.hash_value
         page_data = [
             self.mem_pool_host.get_flat_data_page(
@@ -789,10 +793,9 @@ class HiCacheController:
             )
             for j in range(len(page_hashes))
         ]
-        storage_keys = operation.storage_keys
-        success = self.storage_backend.batch_set(storage_keys, page_data)
+        success = self.storage_backend.batch_set(operation.storage_keys, page_data)
         if not success:
-            logger.warning(f"Failed to write page {storage_keys} to storage.")
+            logger.warning(f"Failed to write page {operation.storage_keys} to storage.")
         operation.completed_tokens += self.page_size * len(page_hashes)
 
     def mooncake_page_backup(self, operation):
@@ -830,12 +833,13 @@ class HiCacheController:
                 operation: StorageOperation = self.backup_queue.get(block=True, timeout=1)
                 if operation is None:
                     continue
-                logger.info(f"Backup queue length: {self.backup_queue.qsize()}")
+                logger.info(f"[HiCacheContorller] Backup queue length: {self.backup_queue.qsize()}")
                 last_hash = operation.last_hash
                 tokens_to_backup = operation.token_ids
                 node = operation.node
                 storage_key = None
-                if node is not None:
+                if self.disable_hash:
+                    assert node is not None, "Node must be set when hash is disabled."
                     # get the parent key for the node, if available
                     parent_key = self.get_node_key(node.parent)
                     storage_key = tokens_to_bytes(parent_key)
@@ -850,7 +854,8 @@ class HiCacheController:
                         ],
                         last_hash,
                     )
-                    if storage_key:
+                    if self.disable_hash:
+                        assert storage_key is not None, "Storage key must be set when hash is disabled."
                         new_key = tokens_to_backup[
                             backup_hit_count : backup_hit_count + self.page_size
                         ]
