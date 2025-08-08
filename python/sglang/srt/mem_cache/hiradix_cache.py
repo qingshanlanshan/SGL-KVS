@@ -105,6 +105,7 @@ class HiRadixCache(RadixCache):
             req_to_token_pool, token_to_kv_pool_allocator, page_size, disable=False
         )
         self.disable_hash = os.getenv("SGLANG_HICACHE_FILE_BACKEND_STORAGE_DISABLE_HASH", "0") == "1"
+        self.approx_backuped_storage_hash_count = 0
 
     def reset(self):
         TreeNode.counter = 0
@@ -150,6 +151,8 @@ class HiRadixCache(RadixCache):
         )
         self.ongoing_backup[operation_id] = node
         node.protect_host()
+        self.approx_backuped_storage_hash_count += len(node.host_value)
+        logger.debug(f"HiRadixCache approx hash count: {self.approx_backuped_storage_hash_count}")
 
     def inc_hit_count(self, node: TreeNode):
         if self.cache_controller.write_policy == "write_back":
@@ -217,7 +220,7 @@ class HiRadixCache(RadixCache):
         num_evicted = 0
         write_back_nodes = []
         while num_evicted < num_tokens and len(leaves):
-            x = heapq.heappop(leaves)
+            x: TreeNode = heapq.heappop(leaves)
 
             if x.lock_ref > 0:
                 continue
@@ -268,7 +271,7 @@ class HiRadixCache(RadixCache):
 
         num_evicted = 0
         while num_evicted < num_tokens and len(leaves):
-            x = heapq.heappop(leaves)
+            x: TreeNode = heapq.heappop(leaves)
             if x == self.root_node:
                 break
             # only evict the host value of evicted nodes
@@ -279,6 +282,9 @@ class HiRadixCache(RadixCache):
             if x.host_ref_counter > 0:
                 continue
 
+            self.approx_backuped_storage_hash_count -= (len(x.hash_value) if x.hash_value is not None else 0)
+            assert self.approx_backuped_storage_hash_count >= 0, f"approx_backuped_storage_hash_count {self.approx_backuped_storage_hash_count} < 0"
+            
             num_evicted += self.cache_controller.evict_host(x.host_value)
 
             for k, v in x.parent.children.items():

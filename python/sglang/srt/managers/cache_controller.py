@@ -760,7 +760,7 @@ class HiCacheController:
                 operation: StorageOperation = self.backup_queue.get(block=True, timeout=1)
                 if operation is None:
                     continue
-                logger.info(f"[HiCacheContorller] Backup queue length: {self.backup_queue.qsize()}")
+                logger.info(f"Backup queue length: {self.backup_queue.qsize()}")
                 last_hash = operation.last_hash
                 tokens_to_backup = operation.token_ids
 
