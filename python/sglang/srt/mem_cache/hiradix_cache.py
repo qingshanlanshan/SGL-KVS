@@ -147,7 +147,6 @@ class HiRadixCache(RadixCache):
             node.host_value,
             node.key, 
             node.parent.get_last_hash_value(),
-            node if self.disable_hash else None,
         )
         self.ongoing_backup[operation_id] = node
         node.protect_host()
@@ -166,6 +165,7 @@ class HiRadixCache(RadixCache):
                 self.enable_storage
                 and (not node.backuped_storage)
                 and node.hit_count >= self.write_through_threshold_storage
+                # and (node.parent.backuped_storage if node.parent != self.root_node else True)
             ):
                 # if the node is backuped on host memory but not on storage
                 self.write_backup_storage(node)
@@ -532,7 +532,6 @@ class HiRadixCache(RadixCache):
             host_indices, 
             new_input_tokens, 
             last_hash,
-            last_host_node if self.disable_hash else None
         )
         self.ongoing_prefetch[req_id] = (
             last_host_node,

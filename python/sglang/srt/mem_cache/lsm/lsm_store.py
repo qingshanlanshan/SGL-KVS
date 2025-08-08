@@ -47,7 +47,6 @@ class HiCacheLSM(HiCacheStorage):
             return key + self.tp_suffix.encode("utf-8")
         else:
             raise TypeError(f"Key must be str or bytes, got {type(key)}")
-        return key + self.tp_suffix
 
     def _int_tobytes(self, key: List[int] | int) -> bytes:
         if isinstance(key, int):

@@ -52,6 +52,10 @@ def record_stats(op_name):
 
                 if op_name == "exist" and result is True:
                     stats.n_exists_true += 1
+                elif op_name == "set" and result is True:
+                    stats.n_sets_success += count
+                elif op_name == "get":
+                    stats.n_gets_success += sum(r is not None for r in result)
 
                 return result
             finally:
@@ -85,8 +89,10 @@ class HiCacheStorage(ABC):
         def __init__(self):
             self.n_gets = 0
             self.t_gets = 0.0
+            self.n_gets_success = 0
             self.n_sets = 0
             self.t_sets = 0.0
+            self.n_sets_success = 0
             self.n_exists = 0
             self.n_exists_true = 0
             self.t_exists = 0.0
@@ -94,8 +100,8 @@ class HiCacheStorage(ABC):
         def __str__(self):
             return (
                 f"\n\n[HiCacheStorage] Statistics\n"
-                f"[Gets] Count: {self.n_gets}, Avg Time: {self.t_gets / max(1, self.n_gets):.6f}s\n"
-                f"[Sets] Count: {self.n_sets}, Avg Time: {self.t_sets / max(1, self.n_sets):.6f}s\n"
+                f"[Gets] Count: {self.n_gets}, Avg Time: {self.t_gets / max(1, self.n_gets):.6f}s, Get Success: {self.n_gets_success}\n"
+                f"[Sets] Count: {self.n_sets}, Avg Time: {self.t_sets / max(1, self.n_sets):.6f}s, Set Success: {self.n_sets_success}\n"
                 f"[Exists] Count: {self.n_exists}, Avg Time: {self.t_exists / max(1, self.n_exists):.6f}s, Exists True: {self.n_exists_true}\n"
             )
 
