@@ -151,7 +151,7 @@ class HiRadixCache(RadixCache):
         )
         self.ongoing_backup[operation_id] = node
         node.protect_host()
-        self.approx_backuped_storage_hash_count += len(node.host_value)
+        self.approx_backuped_storage_hash_count += len(node.host_value) // self.page_size
         logger.debug(f"HiRadixCache approx hash count: {self.approx_backuped_storage_hash_count}")
 
     def inc_hit_count(self, node: TreeNode):
@@ -458,6 +458,7 @@ class HiRadixCache(RadixCache):
                 group=self.tp_group,
             )
             min_completed_tokens = completed_tokens_tensor.item()
+        self.approx_backuped_storage_hash_count += len(hash_value)
         fetched_token_ids = token_ids[:min_completed_tokens]
         written_indices = host_indices[:min_completed_tokens]
         matched_length = self._insert_helper_host(
