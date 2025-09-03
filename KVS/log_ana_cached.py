@@ -56,13 +56,20 @@ def analyze_log_file(filename):
 
                 if record_num is not None and time_per_iter is not None:
                     # 如果编号比上次小（例如重新回到 0），则认为是新的 run
+                    print(record_num)
                     if record_num < last_record:
                         run_id += 1
+                    elif record_num == last_record:
+                        continue
                     last_record = record_num
 
 
                     group_times[run_id].append(time_per_iter)
-            
+                    print(group_times[run_id])
+                if last_record >= 10:
+                    break
+    
+    
     
 
     except FileNotFoundError:
@@ -76,7 +83,6 @@ def analyze_log_file(filename):
         print("没有找到符合格式的日志记录")
         return
 
-
     print("\n" + "=" * 70)
     print("每1000个记录的时间统计 (按 run 分开):")
     print("=" * 70)
@@ -86,6 +92,7 @@ def analyze_log_file(filename):
     for run_id in sorted(group_times.keys()):
         times = group_times[run_id]
         avg_time = sum(times) / len(times)
+        print(len(times))
         min_time = min(times)
         max_time = max(times)
 

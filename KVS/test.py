@@ -390,39 +390,42 @@ def main():
     prev = 0
     prev_cached, prev_total = 0, 0   # for interval diff
 
+    interval_results = []
     for stage_idx, count in enumerate(args.intervals):
         stage_qas = multi_qas[prev: prev + count]
 
-        # 执行本 interval 请求
+        # interval 开始计时
+        t0 = time.time()
         stage_results = generate_batch(stage_qas, port)
         results.extend(stage_results)
+        t1 = time.time()
+
+        interval_time = t1 - t0
+        avg_interval_time = interval_time / count if count > 0 else 0.0
 
         # 查询服务端 metrics（累计值）
         cached_tokens, total_tokens, hit_rate_cum = get_cache_hit_rate_from_metrics(port)
 
-        # 区间差分计算
+        # 区间差分
         delta_cached = cached_tokens - prev_cached
         delta_total = total_tokens - prev_total
         hit_rate_interval = delta_cached / delta_total if delta_total > 0 else 0.0
 
-        interval_results.append({
-            "stage": stage_idx + 1,
-            "requests": f"{prev+1}-{prev+count}",
-            "cached_tokens_interval": delta_cached,
-            "total_tokens_interval": delta_total,
-            "hit_rate_interval": hit_rate_interval,
-            "cached_tokens_cumulative": cached_tokens,
-            "total_tokens_cumulative": total_tokens,
-            "hit_rate_cumulative": hit_rate_cum,
-        })
-
-        print_highlight(
+        # 生成一行字符串
+        log_line = (
             f"[Stage {stage_idx+1}] Requests {prev+1}-{prev+count} | "
             f"Interval hit rate: {hit_rate_interval:.4f} ({delta_cached}/{delta_total}) | "
-            f"Cumulative hit rate: {hit_rate_cum:.4f} ({cached_tokens}/{total_tokens})"
+            f"Cumulative hit rate: {hit_rate_cum:.4f} ({cached_tokens}/{total_tokens}) | "
+            f"Interval time: {interval_time:.2f}s | "
+            f"Avg per request: {avg_interval_time:.2f}s"
         )
 
-        # 更新累计值
+        # 打印到屏幕
+        print_highlight(log_line)
+
+        # 保存到 interval_results
+        interval_results.append(log_line)
+
         prev_cached, prev_total = cached_tokens, total_tokens
         prev += count
 
@@ -460,14 +463,8 @@ def main():
                 f.write("\n")
 
         f.write("=== Interval Server Cache Stats ===\n")
-        for stat in interval_results:
-            f.write(f"Stage {stat['stage']} ({stat['requests']}): "
-                    f"IntervalHitRate={stat['hit_rate_interval']:.4f}, "
-                    f"IntervalCached={stat['cached_tokens_interval']:.0f}, "
-                    f"IntervalTotal={stat['total_tokens_interval']:.0f} | "
-                    f"CumulativeHitRate={stat['hit_rate_cumulative']:.4f}, "
-                    f"CumulativeCached={stat['cached_tokens_cumulative']:.0f}, "
-                    f"CumulativeTotal={stat['total_tokens_cumulative']:.0f}\n")
+        for line in interval_results:
+            f.write(line + "\n")
         f.write("\n")
 
         f.write("=== Sample Requests and Responses ===\n")
