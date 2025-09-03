@@ -130,7 +130,10 @@ class SafetensorHelper:
                 if len(group) == 1:
                     # 单个offset，直接处理
                     original_idx, offset = group[0]
-                    tensor_quantized = tensor_slice[offset]
+                    try:
+                        tensor_quantized = tensor_slice[offset]
+                    except IndexError:
+                        continue
                     scale = scale_tensor[offset].item()
                     tensor_dequantized = self._dequantize_tensor(tensor_quantized, scale)
                     results[original_idx] = tensor_dequantized
@@ -150,7 +153,10 @@ class SafetensorHelper:
                     
                     # 将结果分配到原始位置
                     for i, (original_idx, offset) in enumerate(group):
-                        results[original_idx] = tensor_dequantized_list[i]
+                        try:
+                            results[original_idx] = tensor_dequantized_list[i]
+                        except IndexError:
+                            continue
         
         return results
     

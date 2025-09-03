@@ -120,11 +120,20 @@ class HiCacheLSM(HiCacheStorage):
                 self._get_filename(fileno), offsets=offsets
             )
             for i, idx in enumerate(idxs):
-                target_locations[idx].set_(
-                    kv_caches[i]
-                    .reshape(target_locations[idx].shape)
-                    .untyped_storage()
-                )
+                # target_locations[idx].set_(
+                #     kv_caches[i]
+                #     .reshape(target_locations[idx].shape)
+                #     .untyped_storage()
+                # ) 
+                if target_locations[idx] is not None and kv_caches[i] is not None:
+                    target_locations[idx].set_(
+                        kv_caches[i]
+                        .reshape(target_locations[idx].shape)
+                        .untyped_storage()
+                    )
+                # else:
+                    # # 可以打印日志或跳过
+                    # print(f"Skipping idx={idx}, target or cache is None")
                 results[idx] = target_locations[idx]
         return results
 

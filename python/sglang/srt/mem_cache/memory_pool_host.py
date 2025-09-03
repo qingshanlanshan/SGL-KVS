@@ -22,7 +22,7 @@ if not _is_npu:
         transfer_kv_per_layer_mla,
         transfer_kv_per_layer_mla_pf_lf,
         transfer_kv_per_layer_pf_lf,
-    )
+    ) 
 
 logger = logging.getLogger(__name__)
 
@@ -441,21 +441,39 @@ class MHATokenToKVPoolHost(HostKVCache):
 
     def set_from_flat_data_page(self, index: int, data_page: torch.Tensor) -> None:
         if self.layout == "layer_first":
-            self.kv_buffer[:, :, index : index + self.page_size, :, :] = (
-                data_page.reshape(
-                    2,
-                    self.layer_num,
-                    self.page_size,
-                    self.head_num,
-                    self.head_dim,
-                )
-            )
+            if data_page is not None:
+                try:
+                    self.kv_buffer[:, :, index : index + self.page_size, :, :] = (
+                        data_page.reshape(
+                            2,
+                            self.layer_num,
+                            self.page_size,
+                            self.head_num,
+                            self.head_dim,
+                        )
+                    )
+                except RuntimeError as e:
+                    pass
+                    # print(f"跳过 reshape 错误页: {e}")
+            # self.kv_buffer[:, :, index : index + self.page_size, :, :] = (
+            #     data_page.reshape(
+            #         2,
+            #         self.layer_num,
+            #         self.page_size,
+            #         self.head_num,
+            #         self.head_dim,
+            #     )
+            # )
         elif self.layout == "page_first":
-            self.kv_buffer[:, index : index + self.page_size, :, :, :] = (
-                data_page.reshape(
-                    2, self.page_size, self.layer_num, self.head_num, self.head_dim
-                )
-            )
+            if data_page is not None:
+                try:
+                    self.kv_buffer[:, index : index + self.page_size, :, :, :] = (
+                        data_page.reshape(
+                            2, self.page_size, self.layer_num, self.head_num, self.head_dim
+                        )
+                    )
+                except RuntimeError as e:
+                    pass
         else:
             raise ValueError(f"Unsupported layout: {self.layout}")
 

@@ -225,8 +225,10 @@ class HiCacheFile(HiCacheStorage):
                     torch.frombuffer(f.read(), dtype=target_location.dtype)
                     .reshape(target_location.shape)
                     .untyped_storage()
-                )
+                ) 
             return target_location
+        except RuntimeError as e:
+            logger.warning(f"Skipping corrupted or mismatched KV page: {e}")
         except FileNotFoundError:
             logger.warning(f"Failed to fetch {key} from HiCacheFile storage.")
             return None

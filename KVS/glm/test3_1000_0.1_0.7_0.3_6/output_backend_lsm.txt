@@ -1,0 +1,72 @@
+=== Configuration ===
+Data source: synthetic
+Sequence length: 8192
+Chunk size: 256
+Intervals: [1000, 1000, 1000, 1000, 1000, 1000]
+Target hit rates: [0.1, 0.3, 0.5, 0.7, 0.5, 0.3]
+
+=== Synthetic Generation Statistics ===
+Stage 1 (1-1000): Target=0.10, StageActual=0.0937, Cumulative=0.0937
+Stage 2 (1001-2000): Target=0.30, StageActual=0.3125, Cumulative=0.2031
+Stage 3 (2001-3000): Target=0.50, StageActual=0.5000, Cumulative=0.3021
+Stage 4 (3001-4000): Target=0.70, StageActual=0.6875, Cumulative=0.3984
+Stage 5 (4001-5000): Target=0.50, StageActual=0.5000, Cumulative=0.4187
+Stage 6 (5001-6000): Target=0.30, StageActual=0.3125, Cumulative=0.4010
+
+=== Interval Server Cache Stats ===
+Stage 1 (1-1000): IntervalHitRate=0.2728, IntervalCached=1585197, IntervalTotal=5809818 | CumulativeHitRate=0.2728, CumulativeCached=1585197, CumulativeTotal=5809818
+Stage 2 (1001-2000): IntervalHitRate=0.2758, IntervalCached=1602380, IntervalTotal=5809530 | CumulativeHitRate=0.2743, CumulativeCached=3187577, CumulativeTotal=11619348
+Stage 3 (2001-3000): IntervalHitRate=0.2857, IntervalCached=1660650, IntervalTotal=5811551 | CumulativeHitRate=0.2781, CumulativeCached=4848227, CumulativeTotal=17430899
+Stage 4 (3001-4000): IntervalHitRate=0.2962, IntervalCached=1720957, IntervalTotal=5809668 | CumulativeHitRate=0.2827, CumulativeCached=6569184, CumulativeTotal=23240567
+Stage 5 (4001-5000): IntervalHitRate=0.2954, IntervalCached=1716283, IntervalTotal=5810639 | CumulativeHitRate=0.2852, CumulativeCached=8285467, CumulativeTotal=29051206
+Stage 6 (5001-6000): IntervalHitRate=0.2839, IntervalCached=1649407, IntervalTotal=5809284 | CumulativeHitRate=0.2850, CumulativeCached=9934874, CumulativeTotal=34860490
+
+=== Sample Requests and Responses ===
+Request 1:
+  Prompt: 3gM4EBZyFA4t0iSEOgE8wbMfnNFSVtL4dSEoLa2LMIXgdKo1eF...
+  Response: 3
+
+Request 2:
+  Prompt: 3gM4EBZyFA4t0iSEOgE8wbMfnNFSVtL4dSEoLa2LMIXgdKo1eF...
+  Response: v
+
+Request 3:
+  Prompt: 3gM4EBZyFA4t0iSEOgE8wbMfnNFSVtL4dSEoLa2LMIXgdKo1eF...
+  Response: v
+
+Request 4:
+  Prompt: 3gM4EBZyFA4t0iSEOgE8wbMfnNFSVtL4dSEoLa2LMIXgdKo1eF...
+  Response: L
+
+Request 5:
+  Prompt: 3gM4EBZyFA4t0iSEOgE8wbMfnNFSVtL4dSEoLa2LMIXgdKo1eF...
+  Response: v
+
+Request 6:
+  Prompt: 3gM4EBZyFA4t0iSEOgE8wbMfnNFSVtL4dSEoLa2LMIXgdKo1eF...
+  Response: L
+
+Request 7:
+  Prompt: 3gM4EBZyFA4t0iSEOgE8wbMfnNFSVtL4dSEoLa2LMIXgdKo1eF...
+  Response: 3
+
+Request 8:
+  Prompt: 3gM4EBZyFA4t0iSEOgE8wbMfnNFSVtL4dSEoLa2LMIXgdKo1eF...
+  Response: L
+
+Request 9:
+  Prompt: 3gM4EBZyFA4t0iSEOgE8wbMfnNFSVtL4dSEoLa2LMIXgdKo1eF...
+  Response: 3
+
+Request 10:
+  Prompt: 3gM4EBZyFA4t0iSEOgE8wbMfnNFSVtL4dSEoLa2LMIXgdKo1eF...
+  Response: L
+
+
+=== Performance Summary ===
+Total requests: 6000
+Total time: 6071.29 seconds
+Average latency: 1.01 seconds
+Final server cache hit rate: 0.2850
+Total tokens processed: 34860490
+Cached tokens: 9934874

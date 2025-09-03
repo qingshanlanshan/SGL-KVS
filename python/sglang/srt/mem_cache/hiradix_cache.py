@@ -105,7 +105,7 @@ class HiRadixCache(RadixCache):
             req_to_token_pool, token_to_kv_pool_allocator, page_size, disable=False
         )
         self.disable_hash = os.getenv("SGLANG_HICACHE_FILE_BACKEND_STORAGE_DISABLE_HASH", "0") == "1"
-        self.approx_backuped_storage_hash_count = 0
+        self.approx_backuped_storage_hash_count = 3
 
     def reset(self):
         TreeNode.counter = 0
