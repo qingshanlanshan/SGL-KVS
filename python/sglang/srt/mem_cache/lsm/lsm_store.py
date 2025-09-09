@@ -13,6 +13,28 @@ from sglang.srt.distributed import (
 )
 logger = logging.getLogger(__name__)
 
+def largest_tensor_x(folder: str) -> int:
+    if not os.path.isdir(folder):   # folder missing or not a dir
+        return -1
+
+    prefix = "tensor_"
+    max_x = -1
+    with os.scandir(folder) as it:
+        for entry in it:                      # one pass, no stat() calls
+            name = entry.name
+            if not name.startswith(prefix):
+                continue
+            i = len(prefix)
+            j = i
+            while j < len(name) and name[j].isdigit():
+                j += 1
+            if j == i:                        # no digits after prefix
+                continue
+            x = int(name[i:j])
+            if x > max_x:
+                max_x = x
+    return max_x
+
 class HiCacheLSM(HiCacheStorage):
     def __init__(self, db_path: str = "db", tensor_filename: str = "tensor"):
         try:
@@ -25,7 +47,7 @@ class HiCacheLSM(HiCacheStorage):
         self.tp_suffix = f"_{tp_rank}_{tp_size}" if tp_size > 1 else ""
         self.db_path = os.getenv("SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR", db_path)
         self.tensor_filename = tensor_filename
-        self.file_count = 0
+        self.file_count = largest_tensor_x(self.db_path) + 1
         
         self.db = rocksdb.RocksDB()
         print(f"Opening RocksDB at '{self.db_path}'", flush=True)
