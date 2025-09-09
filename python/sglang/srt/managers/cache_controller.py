@@ -721,7 +721,7 @@ class HiCacheController:
             ]
             success = self.storage_backend.batch_set(page_hashes, page_data)
             if not success:
-                logger.warning(f"Failed to write page {page_hashes} to storage.")
+                # logger.warning(f"Failed to write page {page_hashes} to storage.")
                 break
             operation.completed_tokens += self.page_size * len(page_hashes)
 
