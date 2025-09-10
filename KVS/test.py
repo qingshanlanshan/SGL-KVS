@@ -20,7 +20,6 @@ def start_server(model_path="zai-org/GLM-4-9B-0414", hicache_ratio=1.5, hicache_
     python3 -m sglang.launch_server \
     --model-path {model_path} \
     --host 0.0.0.0 \
-    --disable-overlap-schedule \
     --dtype float16 \
     --enable-metrics \
     --enable-hierarchical-cache \
@@ -328,7 +327,7 @@ def parse_args():
     # Finite chunk pool (character-based)
     parser.add_argument("--pool-size", type=int, default=4,
                         help="Finite chunk pool size (default: 4)")
-    parser.add_argument("--min-hits-to-count", type=int, default=1,
+    parser.add_argument("--min-hits-to-count", type=int, default=3,
                         help="Prefix hit threshold: a prefix counts only after it has appeared at least this many times previously (default: 1)")
     parser.add_argument("--chunk-charset", type=str, default=string.ascii_letters + string.digits,
                         help="Character set used to build the character-based chunk pool")

@@ -563,8 +563,8 @@ class HiCacheController:
         return operation.completed_tokens, operation.hash_value
 
     def generic_page_transfer(self, operation: PrefetchOperation, batch_size=8):
-        if self.is_lsm_backend():
-            batch_size = len(operation.hash_value)
+        # if self.is_lsm_backend():
+        #     batch_size = len(operation.hash_value)
         for i in range(0, len(operation.hash_value), batch_size):
             page_hashes = operation.hash_value[i : i + batch_size]
             # todo: zero copy
@@ -591,7 +591,7 @@ class HiCacheController:
                     operation.host_indices[operation.completed_tokens :]
                 )
                 break
-
+            
     def mooncake_page_transfer(self, operation):
         key_strs, buffer_ptrs, buffer_sizes = self.mem_pool_host.get_buffer_meta(
             operation.hash_value, operation.host_indices
@@ -612,7 +612,7 @@ class HiCacheController:
         while not self.stop_event.is_set():
             try:
                 operation: PrefetchOperation = self.prefetch_buffer.get(block=True, timeout=1)
-                logger.info(f"[HiCacheController] Prefetch buffer length: {self.prefetch_buffer.qsize()}")
+                logger.debug(f"[HiCacheController] Prefetch buffer length: {self.prefetch_buffer.qsize()}")
                 if self.is_mooncake_backend():
                     self.mooncake_page_transfer(operation)
                 else:
@@ -672,7 +672,7 @@ class HiCacheController:
                         group=self.prefetch_tp_group,
                     )
                     storage_hit_count = storage_hit_count_tensor.item()
-
+                    
                 if storage_hit_count < self.prefetch_threshold:
                     # not to prefetch if not enough benefits
                     self.prefetch_revoke_queue.put(operation.request_id)
@@ -760,7 +760,7 @@ class HiCacheController:
                 operation: StorageOperation = self.backup_queue.get(block=True, timeout=1)
                 if operation is None:
                     continue
-                logger.info(f"Backup queue length: {self.backup_queue.qsize()}")
+                logger.debug(f"Backup queue length: {self.backup_queue.qsize()}")
                 last_hash = operation.last_hash
                 tokens_to_backup = operation.token_ids
 
