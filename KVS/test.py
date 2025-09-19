@@ -10,18 +10,20 @@ import string
 import sglang as sgl
 from sglang.lang.backend.runtime_endpoint import RuntimeEndpoint
 import json
+from transformers import AutoTokenizer
 
 
 # ----------------------------- Server & Runtime -----------------------------
 
-def start_server(model_path="zai-org/GLM-4-9B-0414", hicache_ratio=1.5, hicache_storage_backend=None, port=31000):
+def start_server(model_path="zai-org/GLM-4-9B-0414", hicache_ratio=1.5, hicache_storage_backend=None, port=31000, warmup=False):
     """Launch an sglang server with configurable parameters."""
     command = f"""
     python3 -m sglang.launch_server \
     --model-path {model_path} \
     --host 0.0.0.0 \
     --dtype float16 \
-    --enable-metrics \
+    {"--enable-metrics" if not warmup else ""} \
+    {"--hicache-write-policy write_through" if warmup else ""} \
     --enable-hierarchical-cache \
     --hicache-ratio {hicache_ratio} \
     {"--hicache-storage-backend " + hicache_storage_backend if hicache_storage_backend else ""} \
@@ -79,6 +81,18 @@ def generate_batch(qas, port=31000) -> List[str]:
     # Strip the prompts from outputs to keep only model continuations.
     return [resp.text()[len(item['qas'][0]['prompt']):] for resp, item in zip(responses, qas)]
 
+def generate(prompt, port, max_new_tokens=32):
+    response = requests.post(
+        f"http://localhost:{port}/generate",
+        json={
+            "text": prompt,
+            "sampling_params": {
+                "temperature": 0,
+                "max_new_tokens": max_new_tokens,
+            },
+        },
+    )
+    return response.json()
 
 def load_dataset(json_path, max_new_tokens=32):
     """Load a list of instructions from a JSON file and wrap them into the expected 'qas' format."""
@@ -98,15 +112,23 @@ def load_dataset(json_path, max_new_tokens=32):
     return multi_qas
 
 
-def build_chunk_pool_char(chunk_token_num: int, pool_size: int,
+def build_chunk_pool_char(model: str, chunk_token_num: int, pool_size: int,
                           charset: str = string.ascii_letters + string.digits) -> List[str]:
     """
     Build a character-based pseudo-token chunk pool. Each chunk has exactly `chunk_token_num` characters.
     This approximates token counts using characters.
     """
+    tokenizer = AutoTokenizer.from_pretrained(model)
+    def random_prompt(tokenizer, token_num):
+        cha_set = string.ascii_letters + string.digits
+        ret = "".join(random.choices(cha_set, k=token_num))
+        while len(tokenizer(ret).input_ids) < token_num:
+            ret += random.choice(cha_set)
+        return ret
     pool = []
     for _ in range(pool_size):
-        pool.append(''.join(random.choices(charset, k=chunk_token_num)))
+        # pool.append(''.join(random.choices(charset, k=chunk_token_num)))
+        pool.append(random_prompt(tokenizer, chunk_token_num))
     return pool
 
 
@@ -331,6 +353,9 @@ def parse_args():
                         help="Prefix hit threshold: a prefix counts only after it has appeared at least this many times previously (default: 1)")
     parser.add_argument("--chunk-charset", type=str, default=string.ascii_letters + string.digits,
                         help="Character set used to build the character-based chunk pool")
+    
+    parser.add_argument("--warmup", action='store_true', default=False,
+                        help="Whether to run a warmup workload(default: False)")
 
     return parser.parse_args()
 
@@ -355,6 +380,7 @@ def main():
     else:
         # Build a finite character-based chunk pool
         chunk_pool = build_chunk_pool_char(
+            model=args.model_path,
             chunk_token_num=args.chunk_size,
             pool_size=args.pool_size,
             charset=args.chunk_charset,
@@ -377,7 +403,8 @@ def main():
         model_path=args.model_path,
         hicache_ratio=args.hicache_ratio,
         hicache_storage_backend=args.hicache_storage_backend,
-        port=args.port
+        port=args.port,
+        warmup=args.warmup,
     )
 
     # Execute requests in intervals
@@ -391,10 +418,16 @@ def main():
 
     for stage_idx, count in enumerate(args.intervals):
         stage_qas = multi_qas[prev: prev + count]
-
         # 执行本 interval 请求
-        stage_results = generate_batch(stage_qas, port)
-        results.extend(stage_results)
+        if args.warmup:
+            for req in stage_qas:
+                prompt = req['qas'][0]['prompt']
+                for _ in range(3):
+                    generate(prompt, port, max_new_tokens=2)
+                
+        else:
+            stage_results = generate_batch(stage_qas, port)
+            results.extend(stage_results)
 
         # 查询服务端 metrics（累计值）
         cached_tokens, total_tokens, hit_rate_cum = get_cache_hit_rate_from_metrics(port)

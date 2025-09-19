@@ -30,8 +30,8 @@ python test.py \
     --seq-length $prompt_token_num \
     --max-new-tokens $max_new_tokens \
     --output-file output_backend_blob.txt \
-    --hicache-storage-backend lsm \
-    > test_backend_lsm.log 2>&1
+    --hicache-storage-backend blob \
+    > test_backend_blob.log 2>&1
 
 echo "=================== Settings ==================="
 echo prompt_token_num=$prompt_token_num
