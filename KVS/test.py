@@ -1,4 +1,4 @@
-from typing import List, Set, Tuple
+from typing import List, Set, Tuple, Optional
 from sglang.utils import wait_for_server, print_highlight, terminate_process, launch_server_cmd
 import argparse
 import requests
@@ -33,34 +33,40 @@ def start_server(model_path="zai-org/GLM-4-9B-0414", hicache_ratio=1.5, hicache_
     wait_for_server(f"http://localhost:{actual_port}")
     return server_process, actual_port
 
+def parse_metrics_response(response_text: str, metric_names: list[str]) -> dict:
+    """Parse the /metrics response text and extract specified metric values."""
+    metrics = {}
+    for line in response_text.split('\n'):
+        for name in metric_names:
+            if line.startswith('sglang:' + name):
+                try:
+                    value = float(line.strip().split()[-1])
+                    metrics[name] = value
+                except Exception as e:
+                    print(f"Error parsing line '{line}': {e}")
+    return metrics
 
-def get_cache_hit_rate_from_metrics(port: int) -> tuple:
+def get_cache_hit_rate_from_metrics(port: int) -> Optional[dict]:
     """Read cached/prompt token totals and hit rate from the server's /metrics endpoint."""
     try:
         metrics_response = requests.get(f"http://localhost:{port}/metrics", timeout=10)
         if metrics_response.status_code == 200:
-            metrics_text = metrics_response.text
-
-            cached_tokens_total = 0.0
-            prompt_tokens_total = 0.0
-
-            for line in metrics_text.split('\n'):
-                if line.startswith('sglang:cached_tokens_total{'):
-                    try:
-                        cached_tokens_total = float(line.split('} ')[1])
-                    except (IndexError, ValueError):
-                        continue
-                if line.startswith('sglang:prompt_tokens_total{'):
-                    try:
-                        prompt_tokens_total = float(line.split('} ')[1])
-                    except (IndexError, ValueError):
-                        continue
-
-            if prompt_tokens_total > 0:
-                return cached_tokens_total, prompt_tokens_total, cached_tokens_total / prompt_tokens_total
-    except Exception:
-        pass
-    return 0.0, 0.0, 0.0
+            metrics = parse_metrics_response(
+                metrics_response.text, 
+                [
+                    'cached_tokens_total', 
+                    'prompt_tokens_total', 
+                    "prefetched_tokens_total", 
+                    "backuped_tokens_total",
+                    "time_to_first_token_seconds_sum",
+                    "time_to_first_token_seconds_count",
+                ]
+            )
+            
+            return metrics
+    except Exception as e:
+        print(f"Error getting cache hit rate from metrics: {e}")
+    return None
 
 
 def generate_batch(qas, port=31000) -> List[str]:
@@ -430,12 +436,22 @@ def main():
             results.extend(stage_results)
 
         # 查询服务端 metrics（累计值）
-        cached_tokens, total_tokens, hit_rate_cum = get_cache_hit_rate_from_metrics(port)
+        metrics = get_cache_hit_rate_from_metrics(port)
 
         # 区间差分计算
-        delta_cached = cached_tokens - prev_cached
-        delta_total = total_tokens - prev_total
-        hit_rate_interval = delta_cached / delta_total if delta_total > 0 else 0.0
+        try:
+            cached_tokens = metrics.get('cached_tokens_total', 0)
+            total_tokens = metrics.get('prompt_tokens_total', 0)
+            delta_cached = cached_tokens - prev_cached
+            delta_total = total_tokens - prev_total
+            hit_rate_cum = cached_tokens / total_tokens if total_tokens > 0 else 0.0
+            hit_rate_interval = delta_cached / delta_total if delta_total > 0 else 0.0
+            prefetched_tokens_total = metrics.get('prefetched_tokens_total', 0)
+            backuped_tokens_total = metrics.get('backuped_tokens_total', 0)
+            average_ttft = (metrics.get('time_to_first_token_seconds_sum', 0) / metrics.get('time_to_first_token_seconds_count', 1)
+                            if metrics.get('time_to_first_token_seconds_count', 0) > 0 else 0.0)
+        except Exception as e:
+            terminate_process(server_process)
 
         interval_results.append({
             "stage": stage_idx + 1,
@@ -446,12 +462,18 @@ def main():
             "cached_tokens_cumulative": cached_tokens,
             "total_tokens_cumulative": total_tokens,
             "hit_rate_cumulative": hit_rate_cum,
+            "prefetched_tokens_total": prefetched_tokens_total,
+            "backuped_tokens_total": backuped_tokens_total,
+            "average_ttft": average_ttft,
         })
 
         print_highlight(
             f"[Stage {stage_idx+1}] Requests {prev+1}-{prev+count} | "
             f"Interval hit rate: {hit_rate_interval:.4f} ({delta_cached}/{delta_total}) | "
-            f"Cumulative hit rate: {hit_rate_cum:.4f} ({cached_tokens}/{total_tokens})"
+            f"Cumulative hit rate: {hit_rate_cum:.4f} ({cached_tokens}/{total_tokens}) | "
+            f"Prefetched tokens: {prefetched_tokens_total:.0f} | "
+            f"Backuped tokens: {backuped_tokens_total:.0f} | "
+            f"Avg. Time to First Token: {average_ttft:.4f} seconds"
         )
 
         # 更新累计值
@@ -466,11 +488,6 @@ def main():
     print_highlight(f"== Data source: {args.data_source} ==")
     print_highlight(f"== Total time: {elapsed_time:.2f} seconds ==")
     print_highlight(f"== Average time per request: {elapsed_time / total_requests:.2f} seconds ==")
-
-    # Get final cache metrics from server
-    cached_tokens, total_tokens, hit_rate = get_cache_hit_rate_from_metrics(port)
-    if total_tokens > 0:
-        print_highlight(f"== Final server-reported cache hit rate: {hit_rate:.4f} ==")
 
     # Save results
     with open(args.output_file, "w") as f:
@@ -512,10 +529,6 @@ def main():
         f.write(f"Total requests: {total_requests}\n")
         f.write(f"Total time: {elapsed_time:.2f} seconds\n")
         f.write(f"Average latency: {elapsed_time / total_requests:.2f} seconds\n")
-        if total_tokens > 0:
-            f.write(f"Final server cache hit rate: {hit_rate:.4f}\n")
-            f.write(f"Total tokens processed: {total_tokens:.0f}\n")
-            f.write(f"Cached tokens: {cached_tokens:.0f}\n")
 
     print_highlight(f"Output saved to {args.output_file}")
 
